@@ -1,0 +1,14 @@
+{
+  "name": "スロット予測・実践",
+  "short_name": "スロット",
+  "description": "予測データ閲覧 + 店内実践カウンター",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1320",
+  "theme_color": "#0f1320",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

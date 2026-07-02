@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#111418" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>実践カウンター</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="css/app.css?v=9" />
+</head>
+<body>
+  <main id="app"></main>
+
+  <nav id="tabbar">
+    <button class="tab" data-tab="session"><span class="ti">🎰</span><span>実践</span></button>
+    <button class="tab" data-tab="profiles"><span class="ti">🛠</span><span>機種</span></button>
+    <button class="tab" data-tab="history"><span class="ti">📊</span><span>記録</span></button>
+  </nav>
+
+  <!-- モーダル土台 -->
+  <div id="modal-root"></div>
+
+  <script src="js/db.js?v=9"></script>
+  <script src="js/engine.js?v=9"></script>
+  <script src="js/app.js?v=9"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+    }
+  </script>
+</body>
+</html>
