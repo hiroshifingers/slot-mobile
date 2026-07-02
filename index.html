@@ -24,6 +24,12 @@
   #frames{position:relative; flex:1 1 auto; min-height:0}
   #frames iframe{position:absolute; inset:0; width:100%; height:100%; border:0; background:#0f1320}
   #frames iframe.hidden{display:none}
+  #update-banner{position:fixed; left:10px; right:10px;
+    bottom:calc(env(safe-area-inset-bottom) + 10px); z-index:50;
+    background:#5b8cff; color:#fff; border:0; border-radius:12px;
+    padding:12px 14px; font-size:14px; font-weight:700; font-family:inherit;
+    box-shadow:0 4px 16px rgba(0,0,0,.35); display:none}
+  #update-banner.show{display:block}
 </style>
 </head>
 <body>
@@ -37,6 +43,7 @@
     <iframe id="f-practice" class="hidden" title="実践カウンター" data-src="practice/index.html"></iframe>
   </div>
 </div>
+<button id="update-banner">🔄 新しいバージョンがあります。タップで更新</button>
 <script>
   var bp = document.getElementById('t-predict');
   var ba = document.getElementById('t-practice');
@@ -57,7 +64,34 @@
   if(location.hash === '#practice'){ show('practice'); }
   if('serviceWorker' in navigator){
     window.addEventListener('load', function(){
-      navigator.serviceWorker.register('sw.js').catch(function(){});
+      navigator.serviceWorker.register('sw.js').then(function(reg){
+        var banner = document.getElementById('update-banner');
+        function promptUpdate(worker){
+          banner.classList.add('show');
+          banner.onclick = function(){
+            banner.classList.remove('show');
+            worker.postMessage({type:'SKIP_WAITING'});
+          };
+        }
+        // iOSのホーム画面アプリはバックグラウンドで自動チェックしないため、
+        // 起動時・復帰時に明示的に最新版を確認する
+        reg.update().catch(function(){});
+        document.addEventListener('visibilitychange', function(){
+          if(document.visibilityState === 'visible') reg.update().catch(function(){});
+        });
+        if(reg.waiting) promptUpdate(reg.waiting);
+        reg.addEventListener('updatefound', function(){
+          var nw = reg.installing;
+          if(!nw) return;
+          nw.addEventListener('statechange', function(){
+            if(nw.state === 'installed' && navigator.serviceWorker.controller) promptUpdate(nw);
+          });
+        });
+        var reloaded = false;
+        navigator.serviceWorker.addEventListener('controllerchange', function(){
+          if(reloaded) return; reloaded = true; location.reload();
+        });
+      }).catch(function(){});
     });
   }
 </script>

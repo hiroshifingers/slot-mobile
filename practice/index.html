@@ -10,7 +10,15 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon.svg" />
-  <link rel="stylesheet" href="css/app.css?v=9" />
+  <link rel="stylesheet" href="css/app.css?v=10" />
+  <style>
+    #update-banner{position:fixed; left:10px; right:10px;
+      bottom:calc(env(safe-area-inset-bottom) + 66px); z-index:50;
+      background:#5b8cff; color:#fff; border:0; border-radius:12px;
+      padding:12px 14px; font-size:14px; font-weight:700; font-family:inherit;
+      box-shadow:0 4px 16px rgba(0,0,0,.35); display:none}
+    #update-banner.show{display:block}
+  </style>
 </head>
 <body>
   <main id="app"></main>
@@ -23,13 +31,43 @@
 
   <!-- モーダル土台 -->
   <div id="modal-root"></div>
+  <button id="update-banner">🔄 新しいバージョンがあります。タップで更新</button>
 
-  <script src="js/db.js?v=9"></script>
-  <script src="js/engine.js?v=9"></script>
-  <script src="js/app.js?v=9"></script>
+  <script src="js/db.js?v=10"></script>
+  <script src="js/engine.js?v=10"></script>
+  <script src="js/app.js?v=10"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').then((reg) => {
+          const banner = document.getElementById('update-banner');
+          function promptUpdate(worker){
+            banner.classList.add('show');
+            banner.onclick = () => {
+              banner.classList.remove('show');
+              worker.postMessage({type:'SKIP_WAITING'});
+            };
+          }
+          // iOSのホーム画面アプリはバックグラウンドで自動チェックしないため、
+          // 起動時・復帰時に明示的に最新版を確認する
+          reg.update().catch(()=>{});
+          document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') reg.update().catch(()=>{});
+          });
+          if (reg.waiting) promptUpdate(reg.waiting);
+          reg.addEventListener('updatefound', () => {
+            const nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', () => {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) promptUpdate(nw);
+            });
+          });
+          let reloaded = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (reloaded) return; reloaded = true; location.reload();
+          });
+        }).catch(()=>{});
+      });
     }
   </script>
 </body>

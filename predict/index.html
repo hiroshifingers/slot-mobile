@@ -101,6 +101,18 @@
   .sg-dr td{font-size:13px; padding:2px 8px 8px}
   .sg-dr td.l{font-size:11px; color:var(--mut)}
 
+  /* 差枚 日別テーブル(参考サイト風: 台番+日付ごとに差枚/G数を2段表示) */
+  .sg-tbl-daily th{font-size:11.5px; min-width:66px}
+  .sg-tbl-daily td{padding:4px 6px; vertical-align:middle}
+  .sg-tbl-daily td.sg-good{background:rgba(226,97,90,.14)}
+  .sg-name{max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700}
+  .sg-name .sg-sub{display:block; font-size:10px; font-weight:400; color:var(--mut);
+    max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .sg-diff{font-size:16px; font-weight:800; line-height:1.15}
+  .sg-games{font-size:10.5px; color:var(--mut); line-height:1.15}
+  .sg-avgrow td{background:var(--card2); font-weight:700}
+  .sg-avgrow .sg-diff{font-size:14px}
+
   /* 週間予報・看板のmname */
   .mname{max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block}
   /* 看板テーブル */
@@ -314,7 +326,7 @@ function renderSagumai(){
   const q=SG.q.toLowerCase();
   const fromD=new Date(SG.from), toD=new Date(SG.to);
   const daySpan=Math.round((toD-fromD)/86400000)+1;
-  if(daySpan<=7) renderSagumaiDaily(sg,ci,q);
+  if(daySpan<=31) renderSagumaiDaily(sg,ci,q);
   else renderSagumaiAgg(sg,ci,q);
 }
 
@@ -365,10 +377,17 @@ function renderSagumaiAgg(sg, ci, q){
   document.getElementById('sg-result').innerHTML=h;
 }
 
+function isGoodDay(diff, games){
+  if(!games) return false;
+  const pay=1+diff/(3*games);
+  return (games>=2500&&pay>=1.08)||(games>=2000&&pay>=1.04);
+}
+
 function renderSagumaiDaily(sg, ci, q){
   const byModel=SG.group==='model';
-  const dates=dateRange(SG.from, SG.to);
-  const fmtD=d=>d.slice(5).replace('-','/');
+  const dates=dateRange(SG.from, SG.to).slice().reverse(); // 新しい日付を左に(参考サイトの並びに合わせる)
+  const wd=['日','月','火','水','木','金','土'];
+  const fmtD=d=>d.slice(5).replace('-','/')+'('+wd[new Date(d+'T00:00:00').getDay()]+')';
   const groups={};
   for(const r of sg.rows){
     const date=r[ci.date];
@@ -377,36 +396,46 @@ function renderSagumaiDaily(sg, ci, q){
     const name=r[ci.name]||'';
     if(q&&!name.toLowerCase().includes(q)) continue;
     const key=byModel?name:r[ci.machine_no];
-    if(!groups[key]) groups[key]={key, name, no:r[ci.machine_no], type:r[ci.type], days:{}, total:0, machines:new Set()};
-    const diff=r[ci.diff]||0;
-    groups[key].days[date]=(groups[key].days[date]||0)+diff;
-    groups[key].total+=diff;
-    groups[key].machines.add(r[ci.machine_no]);
+    if(!groups[key]) groups[key]={key, name, no:r[ci.machine_no], type:r[ci.type], days:{}, total:0, totalGames:0, machines:new Set()};
+    const diff=r[ci.diff]||0, games=r[ci.games]||0;
+    const g=groups[key];
+    const c=g.days[date]||(g.days[date]={diff:0,games:0});
+    c.diff+=diff; c.games+=games;
+    g.total+=diff; g.totalGames+=games;
+    g.machines.add(r[ci.machine_no]);
   }
   let arr=Object.values(groups).sort((a,b)=>b.total-a.total);
   const sumDiff=arr.reduce((s,g)=>s+g.total,0);
-  const NCols=dates.length+1;
 
-  let h=`<div class="meta">${arr.length}${byModel?'機種':'台'}　合計差枚 <b class="${cls(sumDiff)}">${sgn(sumDiff)}</b>　← スライド</div>`;
+  let h=`<div class="meta">${arr.length}${byModel?'機種':'台'}　合計差枚 <b class="${cls(sumDiff)}">${sgn(sumDiff)}</b>　← スライドで日付切替</div>`;
   if(!arr.length){ document.getElementById('sg-result').innerHTML=h+`<div class="card empty">該当なし</div>`; return; }
 
-  h+=`<div class="scroll-x"><table class="sg-tbl"><thead>
+  h+=`<div class="scroll-x"><table class="sg-tbl sg-tbl-daily"><thead>
     <tr>
-      <th class="l">${byModel?'台数':'台番'}</th>`;
+      <th class="l">${byModel?'機種':'台番'}</th>`;
   for(const d of dates) h+=`<th>${fmtD(d)}</th>`;
-  h+=`<th>合計</th></tr></thead><tbody>`;
+  h+=`</tr></thead><tbody>`;
 
   for(const g of arr.slice(0,100)){
-    h+=`<tr class="sg-nr"><td colspan="${NCols+1}">${esc(g.name)}</td></tr>`;
-    h+=`<tr class="sg-dr"><td class="l">${byModel?(g.machines.size+'台'):g.key}</td>`;
+    h+=`<tr><td class="l sg-name">${byModel?g.key:g.no}<span class="sg-sub">${esc(byModel?(g.machines.size+'台'):g.name)}</span></td>`;
     for(const d of dates){
-      const v=g.days[d];
-      if(v==null) h+=`<td class="mut">–</td>`;
-      else if(v===0) h+=`<td class="mut">0</td>`;
-      else h+=`<td class="${cls(v)}">${sgn(v)}</td>`;
+      const c=g.days[d];
+      if(!c) h+=`<td class="mut">–</td>`;
+      else h+=`<td class="${isGoodDay(c.diff,c.games)?'sg-good':''}">
+          <div class="sg-diff ${cls(c.diff)}">${sgn(c.diff)}</div>
+          <div class="sg-games">${c.games.toLocaleString()}</div></td>`;
     }
-    h+=`<td class="${cls(g.total)}">${sgn(g.total)}</td></tr>`;
+    h+=`</tr>`;
   }
+  // 平均行: 日付ごとに全対象の平均差枚/平均G数を表示(参考サイトの最下段「平均」行と同じ考え方)
+  h+=`<tr class="sg-avgrow"><td class="l">平均</td>`;
+  for(const d of dates){
+    let sD=0, sG=0, n=0;
+    for(const g of arr){ const c=g.days[d]; if(c){ sD+=c.diff; sG+=c.games; n++; } }
+    if(!n) h+=`<td class="mut">–</td>`;
+    else h+=`<td><div class="sg-diff ${cls(sD/n)}">${sgn(sD/n)}</div><div class="sg-games">${Math.round(sG/n).toLocaleString()}</div></td>`;
+  }
+  h+=`</tr>`;
   h+=`</tbody></table></div>`;
   if(arr.length>100) h+=`<div class="meta">上位100件のみ表示（${arr.length}件中）</div>`;
   document.getElementById('sg-result').innerHTML=h;

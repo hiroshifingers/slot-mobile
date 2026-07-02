@@ -569,7 +569,6 @@
     $app.innerHTML = `
       <div class="screen-head"><h1>機種</h1>
         <div class="btn-row" style="margin:0;gap:8px">
-          <button class="btn" id="add-ghoul">＋ L東京喰種</button>
           <button class="btn primary" id="new-prof">＋ 新規</button>
         </div></div>
       ${state.profiles.length ? state.profiles.map(p => `
@@ -582,14 +581,6 @@
         : `<div class="empty"><div class="big">🛠</div><p>機種カウンターがまだありません。<br>「VVV2用」「東京グール用」など、機種ごとに作っていきます。</p></div>`}
     `;
     document.getElementById('new-prof').onclick = () => editProfile(null);
-    document.getElementById('add-ghoul').onclick = async () => {
-      const dup = state.profiles.some(p => p.machine === 'L東京喰種（スマスロ）');
-      if (dup && !confirm('すでに「L東京喰種（スマスロ）」があります。もう1つ追加しますか？')) return;
-      const p = buildTokyoGhoulPreset();
-      await DB.putProfile(p);
-      await reload();
-      editProfile(state.profiles.find(x => x.id === p.id)); // 追加した機種の中身を確認できるよう編集画面へ
-    };
     document.querySelectorAll('[data-open]').forEach(el =>
       el.onclick = () => editProfile(state.profiles.find(p => p.id === el.getAttribute('data-open'))));
   }
@@ -1025,74 +1016,6 @@
     state.active = await DB.getActive();
     render();
   })();
-
-  /* プリセット機種: L東京喰種（スマスロ）
-     既存データは一切消さず、常に新規IDで「追加」する（消えた機種の復元用）。
-     判別値の出典: なな徹 / slopachi-quest / altema の公開解析値（2026-07 時点）。
-     設定差のある項目だけをメトリック化。設定差なし小役（弱チェ1/70.3・強チェ1/356.2・
-     スイカ1/100.5・斜めベル1/131.1）は判別に効かないため参考カウンターのみ。 */
-  function buildTokyoGhoulPreset() {
-    const pgN = uid('pg'), pgS = uid('pg');
-    return {
-      id: uid('p'),
-      machine: 'L東京喰種（スマスロ）',
-      pages: [{ id: pgN, name: '通常時' }, { id: pgS, name: '終了画面/示唆' }],
-      bonus_types: ['AT', 'CZ', 'エピソードB'],
-      hit_triggers: [
-        { key: 'choku',       label: '直撃',       group: 'state' },
-        { key: 'cz_kei',      label: 'CZ経由',     group: 'state' },
-        { key: 'r_kyocherry', label: '強チェ',     group: 'rare'  },
-        { key: 'r_chance',    label: 'チャンス目', group: 'rare'  },
-        { key: 'r_weakcherry',label: '弱チェ',     group: 'rare'  },
-        { key: 'z_zone',      label: 'ゾーン',     group: 'zone'  },
-        { key: 'z_tensho',    label: '天井',       group: 'zone'  },
-      ],
-      hit_extra_fields: [],
-      counters: [
-        // 通常時：判別に効くのは下段リプレイ(赫眼)のみ。他は打感確認の参考
-        { key: 'kakugan_rep',   label: '下段リプ(赫眼)', input: 'tap', pageId: pgN },
-        { key: 'weak_cherry',   label: '弱チェリー',     input: 'tap', pageId: pgN },
-        { key: 'strong_cherry', label: '強チェリー',     input: 'tap', pageId: pgN },
-        { key: 'suika',         label: 'スイカ',         input: 'tap', pageId: pgN },
-        { key: 'naname_bell',   label: '斜めベル',       input: 'tap', pageId: pgN },
-        // AT終了画面（キャラ示唆）
-        { key: 'es_amon',     label: '終:亜門&真戸(奇数)',           input: 'tap', pageId: pgS },
-        { key: 'es_suzuya',   label: '終:鈴屋&篠原(偶数)',           input: 'tap', pageId: pgS },
-        { key: 'es_rize',     label: '終:神代利世(設定1否定)',       input: 'tap', pageId: pgS },
-        { key: 'es_fueguchi', label: '終:笛口姉妹(高設定[弱])',      input: 'tap', pageId: pgS },
-        { key: 'es_yomo',     label: '終:四方&イトリ&ウタ(高設定[強])', input: 'tap', pageId: pgS },
-        { key: 'es_gold',     label: '終:金木&董香/金(設定4↑濃厚)',  input: 'tap', pageId: pgS },
-        { key: 'es_rainbow',  label: '終:全員集合/虹(設定6濃厚)',    input: 'tap', pageId: pgS },
-        // エンドカード / CZ終了画面
-        { key: 'ec_kaneki_s', label: 'ｶｰﾄﾞ:金木/銀(設定3↑)',        input: 'tap', pageId: pgS },
-        { key: 'ec_rize_g',   label: 'ｶｰﾄﾞ:神代利世/金(設定4↑)',     input: 'tap', pageId: pgS },
-        { key: 'ec_fukurou',  label: 'ｶｰﾄﾞ:梟(設定4↑/金は5↑)',       input: 'tap', pageId: pgS },
-        { key: 'ec_arima',    label: 'ｶｰﾄﾞ:有馬/虹(設定6濃厚)',       input: 'tap', pageId: pgS },
-        // トロフィー
-        { key: 'tr_gold',     label: '金トロフィー(設定4↑)',         input: 'tap', pageId: pgS },
-        { key: 'tr_kishu',    label: '喰種トロフィー(設定5↑)',       input: 'tap', pageId: pgS },
-        { key: 'tr_rainbow',  label: '虹トロフィー(設定6)',          input: 'tap', pageId: pgS },
-        // 招待状
-        { key: 'inv_4',       label: '招待状「存分に」(設定4↑)',     input: 'tap', pageId: pgS },
-        { key: 'inv_6',       label: '招待状「特別な夜」(設定6濃厚)', input: 'tap', pageId: pgS },
-      ],
-      metrics: [
-        // 大当たり履歴の種別/契機を分母=実践Gで割って 1/X を算出（履歴登録から自動集計）
-        { key: 'm_at', label: 'AT初当たり確率', source: 'hit:type=AT', denominator: 'total_spins', mode: 'fraction', include: true,
-          settings: { '1': 394.4, '2': 380.5, '3': 357.0, '4': 325.9, '5': 291.2, '6': 261.3 } },
-        { key: 'm_cz', label: 'CZ確率', source: 'hit:type=CZ', denominator: 'total_spins', mode: 'fraction', include: true,
-          settings: { '1': 262.6, '2': 255.6, '3': 246.5, '4': 233.1, '5': 216.4, '6': 203.7 } },
-        { key: 'm_episode', label: 'エピソードボーナス確率', source: 'hit:type=エピソードB', denominator: 'total_spins', mode: 'fraction', include: true,
-          settings: { '1': 6620.2, '2': 5879.7, '3': 5114.5, '4': 4062.5, '5': 3166.7, '6': 2639.5 } },
-        { key: 'm_choku', label: 'AT直撃確率', source: 'hit:trigger=choku', denominator: 'total_spins', mode: 'fraction', include: true,
-          settings: { '1': 28460.6, '2': 24453.5, '3': 18093.0, '4': 12019.5, '5': 8615.4, '6': 7036.8 } },
-        // 通常時タップから：下段リプレイ(赫眼)の出現率
-        { key: 'm_kakugan', label: '下段リプ(赫眼)確率', source: 'counter:kakugan_rep', denominator: 'total_spins', mode: 'fraction', include: true,
-          settings: { '1': 1260.3, '2': 1213.6, '3': 1170.3, '4': 1129.9, '5': 1092.3, '6': 1024.0 } },
-      ],
-      createdAt: Date.now(),
-    };
-  }
 
   /* 動作確認用デモ機種（DBが空のときのみ） */
   async function seedDemo() {
