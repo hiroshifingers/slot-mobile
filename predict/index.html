@@ -158,31 +158,34 @@ function typeSeg(){
 }
 function head(){ return `<div class="meta">更新: ${esc(DATA.generated_at)}　/　${esc(DATA.store_id)}</div>`; }
 
-/* ---------- 今日の狙い ---------- */
+/* ---------- 今日の狙い（PCダッシュボード「本日の注目ポイント」と同じML予測） ---------- */
 function scrPick(){
-  const p=DATA.patterns;
-  let h=head();
-  const _t=TYPE; TYPE='at'; h+=perfBar(); TYPE=_t;
-  if(!p||p.error||!p.picks)
-    return h+`<div class="card err">今日の狙いデータなし${p&&p.error?': '+esc(p.error):''}</div>`;
-  const pk=p.picks;
-  h+=`<h2>今日の狙い <span class="sub">${esc(pk.as_of)}（${esc(pk.weekday)}）${pk.event_like?'・イベント該当':''}</span></h2>`;
-  if(pk.banners&&pk.banners.length)
-    h+=`<div class="meta">看板: `+pk.banners.map(b=>`${esc(b.model)}（${(b.score*100).toFixed(0)}%）`).join(' / ')+`</div>`;
-  if(!pk.picks||!pk.picks.length)
-    return h+`<div class="card empty">本日の役割ルール該当なし</div>`;
+  let h=head()+typeSeg()+perfBar();
+  const sec=(DATA.dashboard||{})[TYPE]||{};
+  if(sec.error) return h+`<div class="card err">読み込みエラー: ${esc(sec.error)}</div>`;
+  const fc=sec.forecast||{}, days=fc.days||[], basis=(sec.performance||{}).basis||fc.basis;
+  const day=days[0];   // days[0] = 予測対象日（＝今日の狙い）
+  if(!day) return h+`<div class="card empty">本日の予測データなし</div>`;
+  const g=day.grade||'-';
+  const ep=day.expected_payout!=null?` / 予測出玉率 ${(day.expected_payout*100).toFixed(1)}%`:'';
+  h+=`<h2>今日の狙い <span class="sub">${esc(day.date)}（${esc(day.weekday)}）・評価${esc(g)}</span></h2>`;
+  h+=`<div class="meta">候補${day.candidate_count??0}台${ep}　<span class="note">${basis==='ml'?'AT機ML walk-forward':'参考値(good_score)'}</span></div>`;
+  const ms=day.machines||[];
+  if(!ms.length) return h+`<div class="card empty">本日の候補なし</div>`;
   h+=`<div class="picks-grid">`;
-  for(const x of pk.picks){
-    const island=esc((x.island||'').replace('island_',''));
-    const reason=esc((x.reasons||[]).join('・'));
+  for(const m of ms){
+    const score=basis==='ml'?pct(m.ml_prob):(m.good_score!=null?m.good_score.toFixed(1):'–');
+    const bits=[];
+    if(m.exp_payout!=null) bits.push('予測出玉率 '+(m.exp_payout*100).toFixed(1)+'%');
+    if(m.good_cnt_30!=null) bits.push('30日good '+m.good_cnt_30);
     h+=`<div class="pick-card">
       <div class="pick-top">
-        <span class="pick-no">${x.machine_no}</span>
-        <span class="pick-loc">${island}/${x.end}</span>
-        <span class="pick-pct">${pct(x.expected_hit)}</span>
+        <span class="pick-no">${m.machine_no}</span>
+        <span class="pick-loc">#${m.rank}</span>
+        <span class="pick-pct">${score}</span>
       </div>
-      <div class="pick-name">${esc(x.model)}</div>
-      <div class="pick-reason">${reason}</div>
+      <div class="pick-name">${esc(m.machine_name)}</div>
+      <div class="pick-reason">${esc(bits.join('・'))}</div>
     </div>`;
   }
   h+=`</div>`;
