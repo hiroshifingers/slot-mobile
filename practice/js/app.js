@@ -486,6 +486,7 @@
     s.hits = s.history.length;
     await DB.putSession(s);
     state.active = null; await DB.clearActive();
+    syncNow(false);
   }
 
   /* ---------- 履歴登録モーダル ---------- */
@@ -807,9 +808,9 @@
     const delBtn = document.getElementById('ed-delete');
     if (delBtn) delBtn.onclick = async () => {
       if (!confirm('この機種を削除しますか？')) return;
-      await DB.delProfile(e.id);
+      await DB.delProfile(e.id); addTombstone('pc_profiles', e.id);
       if (state.active && state.active.profileId === e.id) { state.active = null; await DB.clearActive(); }
-      await reload(); state.editing = null; state.tab = 'profiles'; render(); toast('削除しました');
+      await reload(); state.editing = null; state.tab = 'profiles'; render(); toast('削除しました'); syncNow(false);
     };
   }
 
@@ -959,6 +960,87 @@
     await DB.putProfile(e);
     await reload();
     state.editing = null; state.tab = 'profiles'; render(); toast('保存しました');
+    syncNow(false);
+  }
+
+  /* ============================================================
+     同期（Supabaseクラウド）
+     ローカル(IndexedDB)の profiles/sessions を Supabase に upsert し、
+     クラウドの全行を取得して双方向マージ（updated_atのLWW）。
+     削除は tombstone（deleted=true）で伝播させる。ネット必須の処理で、
+     圏外/未ログインなら静かに何もしない（アプリ本体はオフラインで動く）。
+  ============================================================ */
+  const SYNC = {
+    profTime: (p) => p.updatedAt || p.createdAt || 0,
+    sessTime: (s) => s.updatedAt || s.closedAt || s.startedAt || 0,
+    TOMB: 'pc_tombstones', // [{table:'pc_profiles'|'pc_sessions', id, at}]
+    busy: false,
+    lastMsg: '',
+  };
+  const getTombstones = () => { try { return JSON.parse(localStorage.getItem(SYNC.TOMB) || '[]'); } catch (e) { return []; } };
+  function addTombstone(table, id) {
+    const list = getTombstones().filter(t => !(t.table === table && t.id === id));
+    list.push({ table, id, at: Date.now() });
+    localStorage.setItem(SYNC.TOMB, JSON.stringify(list));
+  }
+  function clearTombstones(done) {
+    const doneKeys = new Set(done.map(t => t.table + '/' + t.id));
+    localStorage.setItem(SYNC.TOMB, JSON.stringify(getTombstones().filter(t => !doneKeys.has(t.table + '/' + t.id))));
+  }
+
+  async function syncNow(manual) {
+    if (SYNC.busy) return { ok: false, msg: '同期中' };
+    if (!Cloud.hasSession()) { SYNC.lastMsg = 'ログインしていません'; if (manual) toast('ログインが必要です'); return { ok: false, msg: SYNC.lastMsg }; }
+    SYNC.busy = true;
+    try {
+      // --- pull: クラウド全行を先に取得しローカルへマージ（PC等の他端末の変更を最初に取り込む） ---
+      const [cloudP, cloudS] = await Promise.all([Cloud.selectAll('pc_profiles'), Cloud.selectAll('pc_sessions')]);
+      const cloudPMap = new Map(cloudP.map(r => [r.id, r]));
+      const cloudSMap = new Map(cloudS.map(r => [r.id, r]));
+      let changed = 0;
+      const localP = new Map((await DB.getProfiles()).map(p => [p.id, p]));
+      for (const row of cloudP) {
+        const cur = localP.get(row.id);
+        if (row.deleted) { if (cur) { await DB.delProfile(row.id); changed++; } }
+        else if (!cur || row.updated_at > SYNC.profTime(cur)) { await DB.putProfileRaw(row.data); changed++; }
+      }
+      const localS = new Map((await DB.getSessions()).map(s => [s.id, s]));
+      for (const row of cloudS) {
+        const cur = localS.get(row.id);
+        if (row.deleted) { if (cur) { await DB.delSession(row.id); changed++; } }
+        else if (!cur || row.updated_at > SYNC.sessTime(cur)) { await DB.putSession(row.data); changed++; }
+      }
+
+      // --- push: マージ後のローカルのうち「クラウドより新しい行だけ」を送る
+      //     （ここで無条件push すると、他端末の新しい変更を手元の古いコピーで上書きしてしまう） ---
+      const [profiles, sessions] = await Promise.all([DB.getProfiles(), DB.getSessions()]);
+      const pushP = profiles
+        .filter(p => { const c = cloudPMap.get(p.id); return !c || SYNC.profTime(p) > c.updated_at; })
+        .map(p => ({ id: p.id, data: p, updated_at: SYNC.profTime(p), deleted: false }));
+      const pushS = sessions
+        .filter(s => { const c = cloudSMap.get(s.id); return !c || SYNC.sessTime(s) > c.updated_at; })
+        .map(s => ({ id: s.id, data: s, updated_at: SYNC.sessTime(s), deleted: false }));
+      await Cloud.upsert('pc_profiles', pushP);
+      await Cloud.upsert('pc_sessions', pushS);
+      const tombs = getTombstones();
+      for (const grp of ['pc_profiles', 'pc_sessions']) {
+        const rows = tombs.filter(t => t.table === grp).map(t => ({ id: t.id, data: {}, updated_at: t.at, deleted: true }));
+        await Cloud.upsert(grp, rows);
+      }
+
+      clearTombstones(tombs);
+      await reload();
+      SYNC.lastMsg = changed ? `同期しました（更新 ${changed} 件）` : '同期しました（最新）';
+      if (manual) { toast(SYNC.lastMsg); render(); }
+      return { ok: true, msg: SYNC.lastMsg, added: changed };
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (/セッション切れ|再ログイン/.test(msg)) { SYNC.lastMsg = 'ログインが切れました'; if (manual) { toast('ログインが切れました。再ログインしてください'); renderLogin(); } }
+      else { SYNC.lastMsg = 'クラウドに接続できませんでした'; if (manual) toast('同期できません：ネット接続を確認してください'); }
+      return { ok: false, msg: SYNC.lastMsg, error: msg };
+    } finally {
+      SYNC.busy = false;
+    }
   }
 
   /* ============================================================
@@ -967,7 +1049,11 @@
   async function renderHistory() {
     const sessions = (await DB.getSessions()).sort((a, b) => b.startedAt - a.startedAt);
     $app.innerHTML = `
-      <div class="screen-head"><h1>記録</h1></div>
+      <div class="screen-head">
+        <h1>記録</h1>
+        <button class="btn" id="sync-btn" style="margin-left:auto">🔄 同期</button>
+      </div>
+      <div id="sync-note" class="muted" style="font-size:12px;margin:-4px 2px 10px">${esc(SYNC.lastMsg || 'クラウド同期：ネット接続時に自動で同期されます（🔄で手動同期）')}</div>
       ${sessions.length ? sessions.map(s => {
         const d = new Date(s.startedAt);
         const date = `${d.getMonth() + 1}/${d.getDate()}`;
@@ -979,9 +1065,29 @@
         </div>`;
       }).join('')
         : `<div class="empty"><div class="big">📊</div><p>保存したセッションがここに並びます。<br>実践→設定タブの「保存して終了」で残せます。</p></div>`}
+      <div class="muted" style="font-size:12px;margin:18px 2px 8px;display:flex;align-items:center;gap:10px">
+        <span>👤 ${esc(Cloud.email() || '未ログイン')}</span>
+        <button class="btn" id="logout-btn" style="margin-left:auto;font-size:12px;padding:4px 10px">ログアウト</button>
+      </div>
     `;
     document.querySelectorAll('[data-delsess]').forEach(b =>
-      b.onclick = async (ev) => { ev.stopPropagation(); await DB.delSession(b.getAttribute('data-delsess')); renderHistory(); });
+      b.onclick = async (ev) => {
+        ev.stopPropagation();
+        const id = b.getAttribute('data-delsess');
+        await DB.delSession(id); addTombstone('pc_sessions', id);
+        renderHistory(); syncNow(false);
+      });
+    const syncBtn = document.getElementById('sync-btn');
+    if (syncBtn) syncBtn.onclick = async () => {
+      const note = document.getElementById('sync-note');
+      syncBtn.disabled = true; if (note) note.textContent = '同期中…';
+      await syncNow(true);
+    };
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) logoutBtn.onclick = () => {
+      if (!confirm('ログアウトしますか？（この端末のデータは残りますが、同期が止まります）')) return;
+      Cloud.signOut(); renderLogin();
+    };
   }
 
   /* ---------- モーダル ---------- */
@@ -1009,12 +1115,64 @@
   document.querySelectorAll('#tabbar .tab').forEach(t =>
     t.onclick = () => { state.editing = null; state.tab = t.getAttribute('data-tab'); render(); });
 
-  /* ---------- 起動 ---------- */
-  (async function init() {
+  /* ---------- ログイン画面（初回のみ） ---------- */
+  function renderLogin() {
+    document.getElementById('tabbar').style.display = 'none';
+    $app.innerHTML = `
+      <div style="max-width:360px;margin:12vh auto 0;padding:0 20px;text-align:center">
+        <div style="font-size:44px">🎰</div>
+        <h1 style="margin:8px 0 4px">実践カウンター</h1>
+        <p class="muted" style="font-size:13px;margin-bottom:20px">クラウド同期のためログインしてください（初回のみ・以降は自動）</p>
+        <label class="field" style="text-align:left"><span>メールアドレス</span>
+          <input id="login-email" type="email" inputmode="email" autocomplete="username" /></label>
+        <label class="field" style="text-align:left"><span>パスワード</span>
+          <input id="login-pass" type="password" autocomplete="current-password" /></label>
+        <button class="btn primary" id="login-btn" style="width:100%;margin-top:8px">ログイン</button>
+        <div id="login-err" style="color:var(--bad);font-size:13px;margin-top:10px"></div>
+      </div>`;
+    const btn = document.getElementById('login-btn');
+    const err = document.getElementById('login-err');
+    btn.onclick = async () => {
+      const mail = (document.getElementById('login-email').value || '').trim();
+      const pass = document.getElementById('login-pass').value || '';
+      if (!mail || !pass) { err.textContent = 'メールとパスワードを入力してください'; return; }
+      btn.disabled = true; err.textContent = 'ログイン中…';
+      try { await Cloud.signIn(mail, pass); err.textContent = ''; await startApp(); }
+      catch (e) { btn.disabled = false; err.textContent = String(e && e.message || e); }
+    };
+  }
+
+  // 同期結果が出たら、今リストを見ている画面だけ再描画する（編集中の画面は割り込まない）
+  const REFRESHABLE_TABS = ['history', 'profiles'];
+  function refreshIfChanged(r) {
+    if (r && r.ok && r.added && REFRESHABLE_TABS.includes(state.tab)) render();
+  }
+
+  /* ---------- アプリ本体の起動（ログイン済み） ---------- */
+  async function startApp() {
+    document.getElementById('tabbar').style.display = '';
+    state.tab = 'session';
     await reload();
+    await syncNow(false).catch(() => {}); // デモ機播種より前に：クラウドにデータがあれば優先
     if (!state.profiles.length) { await seedDemo(); await reload(); }
     state.active = await DB.getActive();
     render();
+    // アプリを開いている間、PC側の変更等を自動で取り込む定期同期（オンライン・前面表示中のみ）
+    setInterval(() => {
+      if (document.visibilityState === 'visible' && navigator.onLine) syncNow(false).then(refreshIfChanged);
+    }, 20000);
+  }
+
+  /* ---------- 起動 ---------- */
+  (async function init() {
+    // オンライン復帰時・前面復帰時に自動で同期（失敗は無視）
+    window.addEventListener('online', () => syncNow(false).then(refreshIfChanged));
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') syncNow(false).then(refreshIfChanged);
+    });
+    // セッションが無ければログイン画面。あればオフラインでも本体を起動（同期はオンライン時のみ）。
+    if (!Cloud.hasSession()) renderLogin();
+    else await startApp();
   })();
 
   /* 動作確認用デモ機種（DBが空のときのみ） */

@@ -36,6 +36,8 @@ const DB = (() => {
     async getProfiles()      { return reqP((await tx('profiles', 'readonly')).getAll()); },
     async getProfile(id)     { return reqP((await tx('profiles', 'readonly')).get(id)); },
     async putProfile(p)      { p.updatedAt = Date.now(); return reqP((await tx('profiles', 'readwrite')).put(p)); },
+    // 同期マージ用: updatedAt を書き換えずそのまま保存（LWWの時刻を保つ）
+    async putProfileRaw(p)   { return reqP((await tx('profiles', 'readwrite')).put(p)); },
     async delProfile(id)     { return reqP((await tx('profiles', 'readwrite')).delete(id)); },
 
     // --- sessions (archived) ---

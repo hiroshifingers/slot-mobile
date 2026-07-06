@@ -1,14 +1,15 @@
 /* Service Worker: アプリシェルをキャッシュしオフライン動作させる */
-const CACHE = 'practice-counter-v10';
+const CACHE = 'practice-counter-v14';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
   './icon.svg',
-  './css/app.css?v=10',
-  './js/db.js?v=10',
-  './js/engine.js?v=10',
-  './js/app.js?v=10',
+  './css/app.css?v=13',
+  './js/db.js?v=14',
+  './js/engine.js?v=14',
+  './js/cloud.js?v=14',
+  './js/app.js?v=14',
 ];
 
 self.addEventListener('install', (e) => {
@@ -31,11 +32,15 @@ self.addEventListener('message', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // 自オリジン以外（Supabase等のクラウドAPI）はSWで触らない＝キャッシュせず常に直接ネットワークへ
+  if (new URL(e.request.url).origin !== self.location.origin) return;
+  // network-first: 常に最新を取りに行き、成功したらキャッシュ更新。
+  // オフライン時のみキャッシュへフォールバック（＝更新が確実に届き、圏外でも動く）。
   e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
+    fetch(e.request).then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
       return res;
-    }).catch(() => caches.match('./index.html')))
+    }).catch(() => caches.match(e.request).then(hit => hit || caches.match('./index.html')))
   );
 });

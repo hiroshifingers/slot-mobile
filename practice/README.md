@@ -14,18 +14,26 @@
 
 初回起動時、DBが空なら「デモ機（動作確認用）」を1機種だけ自動生成します。
 
-## 起動（ローカル）
-PWA / Service Worker / IndexedDB は `file://` では動かないため HTTP で配信する:
+## 同期＝Supabase クラウド（F2）
+データの唯一の保管場所は **Supabase（PostgreSQL・無料枠）**。スマホPWAとPC(Streamlit)が同じクラウドを見る。
+
+- **スマホ**: 初回のみ Supabase アカウントでログイン（以降セッション保持で自動）。機種・記録は起動時／前面復帰時／削除時に**自動でクラウドへ同期**。記録タブ右上の **🔄同期** で手動同期も可。オフライン時はIndexedDBに保存し、オンライン復帰時に同期。
+- **PC**: slot-analyzer の Streamlit メニュー「**実践カウンター**」で同じデータを閲覧・操作（記録一覧／機種別サマリー／機種名変更／削除）。詳細なカウンター・判別メトリック編集はスマホ側で行う。
+- テーブル: `pc_profiles` / `pc_sessions`（`id, data(jsonb), updated_at, deleted`）。マージは `updated_at` のLWW。**削除は tombstone(`deleted=true`) で双方向に伝播**（「消しても復活」問題は解消）。進行中セッション(active)は同期しない。
+- 認証: 単一アカウント＋RLS（`auth.uid() = user_id`）。スマホは anon キー＋ログイン、PCは service_role キー（`config/secrets.local.json`・gitignore）。
+- スキーマ: `supabase_schema.sql`（Supabase SQL Editorで実行済み）。
+- クライアント: スマホ=`js/cloud.js`（素のfetchでGoTrue+PostgREST・追加ライブラリ無し）、PC=`backend/practice_counter/cloud.py`。
+
+## アプリ本体の配信（PWAファイルの置き場）
+同期はクラウドだが、PWAの静的ファイル自体はどこかから配信する必要がある。当面は `sync_server.py`（または `python3 -m http.server`）でPC LANから配信し、スマホは自宅Wi-Fiで一度読み込む（以降はSWキャッシュでオフライン起動、同期はクラウド経由でどこでも）。
 
 ```bash
 cd "practice_counter"
-python3 -m http.server 8765
-# → http://localhost:8765/ をブラウザで開く（スマホからは同一LANのPC IPで）
+python3 sync_server.py     # 静的配信。/api/sync は旧LAN方式の名残で未使用
 ```
 
-スマホ実機: ブラウザで開く → 共有 →「ホーム画面に追加」で全画面アプリ化。
+- スマホの完全なPC非依存化（外出先でのアプリ更新も可）にしたい場合は、`GitHub Pages / Netlify` 等のHTTPS公開ホスティングに置くのが最終形（HTTPSはService Workerにも最適）。→ 次段の任意タスク。
 
 ## まだやらないこと
-- F2: Supabase 同期（オフラインキュー）
-- F3: PC取込＋統計（slot_analyzer.db の新テーブル）
-- F4: 本体ML投入（やらない・撤回済み）
+- 本体ML投入（やらない・撤回済み）
+- PWAのHTTPS公開ホスティング（任意・PC完全非依存化のため）
