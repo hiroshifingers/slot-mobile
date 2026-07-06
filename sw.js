@@ -1,5 +1,5 @@
 /* 統合シェルの Service Worker: シェル+予測をオフライン化 / data.json はネット優先 */
-const CACHE = 'slot-mobile-v2';
+const CACHE = 'slot-mobile-20260706-2002-a2fcebda5d';
 const ASSETS = [
   './',
   './index.html',
@@ -30,7 +30,7 @@ self.addEventListener('fetch', (e) => {
   // data.json はネット優先(取れたらキャッシュ更新、ダメなら最後の成功分)
   if (url.pathname.indexOf('data.json') !== -1) {
     e.respondWith(
-      fetch(e.request).then(res => {
+      fetch(e.request, {cache: 'no-store'}).then(res => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
         return res;
