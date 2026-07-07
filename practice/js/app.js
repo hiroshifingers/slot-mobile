@@ -651,10 +651,38 @@
     state.tab = 'edit'; renderEditor();
   }
 
+  // カウンターをカウント画面（タブ）ごとにまとめて表示。タブ名はタグ表示・各タブに ＋追加ボタン
+  function counterGroupsHtml(e) {
+    const rowHtml = (c) => {
+      const dt = counterDenomTokens(c);
+      const sub = (dt && dt.length) ? '母数: ' + formulaText(dt, e) : 'カウントのみ';
+      return `<div class="ed-sort-row tap-row" data-editckey="${esc(c.key)}">
+        <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
+        <div class="tr-main"><div class="tr-name">${esc(c.label) || '(無名)'}</div>
+          <div class="tr-sub">${esc(sub)}</div></div>
+        <button class="btn ghost small" data-delckey="${esc(c.key)}">✕</button>
+      </div>`;
+    };
+    const groupHtml = (tag, id, items, addId, warn) => `
+      <div class="cnt-group">
+        <div class="cnt-group-head">
+          <span class="tab-tag${warn ? ' warn' : ''}">${esc(tag)}</span>
+          <span class="acc-count">${items.length}</span>
+          ${addId != null ? `<button class="btn ghost small cnt-add" data-addcnt="${esc(addId)}" title="このタブにカウンターを追加">＋ 追加</button>` : ''}
+        </div>
+        <div class="cnt-group-items" ${id != null ? `data-cntitems="${esc(id)}"` : ''}>
+          ${items.length ? items.map(rowHtml).join('') : '<div class="muted small" style="padding:6px 2px">（このタブにはまだカウンターがありません）</div>'}
+        </div>
+      </div>`;
+    const pageIds = new Set(e.pages.map(p => p.id));
+    let html = e.pages.map(pg => groupHtml(pg.name || '(無名タブ)', pg.id, e.counters.filter(c => c.pageId === pg.id), pg.id, false)).join('');
+    const orphans = e.counters.filter(c => !pageIds.has(c.pageId));
+    if (orphans.length) html += groupHtml('未割り当て', null, orphans, null, true);
+    return html;
+  }
+
   function renderEditor() {
     const e = state.editing;
-    // カウンターの母数サマリー文言
-    const denomSummary = (c) => { const dt = counterDenomTokens(c); return (dt && dt.length) ? '母数: ' + formulaText(dt, e) : 'カウントのみ'; };
 
     $app.innerHTML = `
       <div class="screen-head">
@@ -711,17 +739,8 @@
         <button class="btn small block" id="add-trigger" style="margin-top:8px">＋ 大当たり契機を追加</button>`)}
 
       ${accCard('counters', 'カウンター', e.counters.length, `
-        <div class="muted small" style="margin-bottom:8px">設定判別に効くものだけ絞って登録。行をタップで編集。</div>
-        <div id="ed-counters">
-          ${e.counters.length ? e.counters.map((c, i) => `
-            <div class="ed-sort-row tap-row" data-editc="${i}">
-              <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-              <div class="tr-main"><div class="tr-name">${esc(c.label) || '(無名)'}</div>
-                <div class="tr-sub">${esc((e.pages.find(p => p.id === c.pageId) || {}).name || '—')} · ${esc(denomSummary(c))}</div></div>
-              <button class="btn ghost small" data-delc="${i}">✕</button>
-            </div>`).join('') : '<div class="muted small">まだありません。「＋追加」から。</div>'}
-        </div>
-        <button class="btn small block" id="add-counter" style="margin-top:8px">＋ カウンターを追加</button>`)}
+        <div class="muted small" style="margin-bottom:10px">カウント画面（タブ）ごとにまとめて表示。各タブの ＋ でそのタブに追加。行をタップで編集・⠿ で並べ替え。</div>
+        <div id="ed-counters">${counterGroupsHtml(e)}</div>`)}
 
       ${accCard('metrics', '判別メトリック', e.metrics.length, `
         <div class="muted small" style="margin-bottom:8px">ソース(分子)と分母を計算式で作成→設定別の理論値を登録。行をタップで編集。</div>
@@ -788,15 +807,28 @@
       b.onclick = (ev) => { ev.stopPropagation(); e.hit_triggers.splice(+b.getAttribute('data-deltrg'), 1); renderEditor(); });
     bindDragReorder(document.getElementById('ed-triggers'), '.ed-sort-row', e.hit_triggers, renderEditor);
 
-    // counters ＝ ポップアップで追加/編集
-    document.getElementById('add-counter').onclick = () => { openAccs.add('counters'); openCounterModal(-1); };
-    document.querySelectorAll('[data-editc]').forEach(row => row.onclick = (ev) => {
-      if (ev.target.closest('.drag-handle') || ev.target.closest('[data-delc]')) return;
-      openCounterModal(+row.getAttribute('data-editc'));
+    // counters ＝ カウント画面（タブ）ごとにグループ表示。追加/編集はポップアップ
+    // 並べ替えはタブ内で行い、変更後は「ページ順＋末尾に未割り当て」で e.counters を組み直す
+    const cntPageIds = new Set(e.pages.map(p => p.id));
+    const cntGroups = e.pages.map(pg => ({ pg, items: e.counters.filter(c => c.pageId === pg.id) }));
+    const cntOrphans = e.counters.filter(c => !cntPageIds.has(c.pageId));
+    const rebuildCounters = () => { e.counters = [...cntGroups.flatMap(g => g.items), ...cntOrphans]; renderEditor(); };
+    document.querySelectorAll('[data-cntitems]').forEach(cont => {
+      const g = cntGroups.find(x => x.pg.id === cont.getAttribute('data-cntitems'));
+      if (g) bindDragReorder(cont, '.ed-sort-row', g.items, rebuildCounters);
     });
-    document.querySelectorAll('[data-delc]').forEach(b =>
-      b.onclick = (ev) => { ev.stopPropagation(); e.counters.splice(+b.getAttribute('data-delc'), 1); renderEditor(); });
-    bindDragReorder(document.getElementById('ed-counters'), '.ed-sort-row', e.counters, renderEditor);
+    document.querySelectorAll('[data-addcnt]').forEach(b => b.onclick = (ev) => {
+      ev.stopPropagation(); openAccs.add('counters'); openCounterModal(-1, b.getAttribute('data-addcnt'));
+    });
+    document.querySelectorAll('[data-editckey]').forEach(row => row.onclick = (ev) => {
+      if (ev.target.closest('.drag-handle') || ev.target.closest('[data-delckey]')) return;
+      openCounterModal(e.counters.findIndex(c => c.key === row.getAttribute('data-editckey')));
+    });
+    document.querySelectorAll('[data-delckey]').forEach(b => b.onclick = (ev) => {
+      ev.stopPropagation();
+      const idx = e.counters.findIndex(c => c.key === b.getAttribute('data-delckey'));
+      if (idx >= 0) { e.counters.splice(idx, 1); renderEditor(); }
+    });
 
     // metrics ＝ ポップアップで追加/編集
     document.getElementById('add-metric').onclick = () => { openAccs.add('metrics'); openMetricModal(-1); };
@@ -935,11 +967,11 @@
   }
 
   /* ---------- カウンター：追加/編集モーダル ---------- */
-  function openCounterModal(idx) {
+  function openCounterModal(idx, defaultPageId) {
     const e = state.editing;
     const isNew = idx < 0;
     const w = isNew
-      ? { key: uid('c'), label: '', input: 'tap', pageId: e.pages[0].id }
+      ? { key: uid('c'), label: '', input: 'tap', pageId: (defaultPageId && e.pages.some(p => p.id === defaultPageId)) ? defaultPageId : e.pages[0].id }
       : JSON.parse(JSON.stringify(e.counters[idx]));
     const pageOpts = e.pages.map(pg => `<option value="${esc(pg.id)}" ${w.pageId === pg.id ? 'selected' : ''}>${esc(pg.name)}</option>`).join('');
     openModal(`

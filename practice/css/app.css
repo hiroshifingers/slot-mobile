@@ -238,6 +238,20 @@ input.auto-ro { color: var(--fg-dim); background: var(--bg2); border-style: dash
 .tr-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-sub { font-size: 12px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---- カウンターをタブ（カウント画面）ごとにまとめる ---- */
+.cnt-group { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px 10px; margin-bottom: 12px; background: var(--bg); }
+.cnt-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.tab-tag {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 800;
+  color: #fff; background: var(--accent2); border: 1px solid var(--accent);
+  border-radius: 999px; padding: 3px 12px; max-width: 60%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tab-tag::before { content: "🏷"; font-size: 11px; }
+.tab-tag.warn { background: transparent; color: var(--bad); border-color: var(--bad); }
+.cnt-group-head .cnt-add { margin-left: auto; flex: none; }
+.cnt-group-items { display: flex; flex-direction: column; }
+
 /* ---- editor 行 ---- */
 .edit-item { background: var(--bg3); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
 .edit-item .eh { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
