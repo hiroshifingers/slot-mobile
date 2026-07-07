@@ -43,8 +43,10 @@
   }
   function fmtCounterFrac(prof, key, cnt) {
     const c = (prof.counters || []).find(x => x.key === key);
-    if (!c || !c.denominator) return '';
-    const denom = Engine.resolveDenom(c.denominator, state.active);
+    if (!c) return '';
+    const toks = counterDenomTokens(c);
+    if (!toks || !toks.length) return '';
+    const denom = Engine.evalFormulaTokens(toks, state.active, { metrics: prof.metrics || [], stack: new Set() });
     if (!(denom > 0)) return '';
     const mode = c.display_mode || 'both';
     const fracStr = `${cnt}/${denom}`;
@@ -128,10 +130,17 @@
     if (which === 'source') return m.sourceTokens ? m.sourceTokens : legacyToTokens(m.source, false);
     return m.denomTokens ? m.denomTokens : legacyToTokens(m.denominator, true);
   }
+  // カウンターの母数（分母）tokens（新形式優先・旧 denominator 文字列から変換）
+  function counterDenomTokens(c) {
+    if (c.denomTokens) return c.denomTokens;
+    return legacyToTokens(c.denominator, true);
+  }
   const emptySession = () => ({ total_spins: 0, start_spins: 0, valid_g: 0, counts: {}, history: [] });
 
   // tab: アプリ階層（session/profiles/edit/history）, sessionTab: セッション内タブ（pageId | 'hits' | 'judge' | 'settings'）
   let state = { tab: 'session', sessionTab: null, profiles: [], active: null, editing: null };
+  // 機種編集：開いているアコーディオン（再描画をまたいで開閉状態を保持）
+  let openAccs = new Set();
 
   /* ---------- ユーティリティ ---------- */
   function toast(msg) {
@@ -141,6 +150,15 @@
   }
   const fmtRate = (spins, hits) => hits ? '1/' + Math.round(spins / hits) : '—';
   const playedG = (s) => Math.max(0, (Number(s.total_spins) || 0) - (Number(s.start_spins) || 0));
+  function todayStr() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  // 総Gを大当たり履歴のG数合計から自動計算（機種設定が auto のとき）
+  const autoTotalG = (s) => (s.history || []).reduce((a, h) => a + (Number(h.g) || 0), 0);
+  function applyAutoTotal(prof, s) {
+    if (prof && prof.totalGMode === 'auto' && s) { s.total_spins = autoTotalG(s); s.start_spins = 0; }
+  }
 
   // 旧データ/新規プロファイルに pages を保証し、counterのpageId補完
   function ensurePages(p) {
@@ -155,6 +173,7 @@
     // 旧「差枚」追加項目は廃止（履歴は組込みメモに統一）
     if (p.hit_extra_fields) p.hit_extra_fields = p.hit_extra_fields.filter(f => !(f.key === 'diff' || f.label === '差枚'));
     if (!p.hit_triggers) p.hit_triggers = []; // 大当たり契機（旧プロファイル互換）
+    if (!p.totalGMode) p.totalGMode = 'manual'; // 総Gカウント方法（manual|auto）
     return p;
   }
 
@@ -163,7 +182,8 @@
     return {
       id: uid('s'), profileId: profile.id, machine: profile.machine,
       startedAt: Date.now(), total_spins: 0, start_spins: 0, valid_g: 0,
-      counts: {}, history: [], note: ''
+      counts: {}, history: [], note: '',
+      store: '', date: todayStr(), machineNo: ''
     };
   }
   async function saveActive() { if (state.active) await DB.setActive(state.active); }
@@ -195,9 +215,12 @@
     if (!state.sessionTab || !validTabs.includes(state.sessionTab)) state.sessionTab = pages[0].id;
 
     const s = state.active;
+    const autoG = prof.totalGMode === 'auto';
+    applyAutoTotal(prof, s);
     const exp = Engine.totalExpectation(prof.metrics, s);
 
     // --- ヘッダー（常時表示・コンパクト） ---
+    const roAttr = autoG ? 'readonly class="auto-ro"' : '';
     const header = `
       <div class="sess-header">
         <div class="sh-top">
@@ -205,12 +228,13 @@
           <div class="sh-best" id="hdr-best">${bestChipHtml(exp)}</div>
         </div>
         <div class="sh-spins">
-          <label><span>総G</span>
-            <input id="total-spins" inputmode="numeric" value="${s.total_spins || ''}" placeholder="0" /></label>
-          <label><span>スタートG</span>
-            <input id="start-spins" inputmode="numeric" value="${s.start_spins || ''}" placeholder="0" /></label>
+          <label><span>総G${autoG ? '（自動）' : ''}</span>
+            <input id="total-spins" inputmode="numeric" value="${s.total_spins || ''}" placeholder="0" ${roAttr} /></label>
+          ${autoG ? '' : `<label><span>スタートG</span>
+            <input id="start-spins" inputmode="numeric" value="${s.start_spins || ''}" placeholder="0" /></label>`}
           <div class="played">実践<br><b id="played-g">${playedG(s)}</b>G</div>
         </div>
+        ${autoG ? '<div class="muted small" style="margin-top:4px">総Gは大当たり履歴のG数合計から自動計算されます</div>' : ''}
       </div>`;
 
     // --- 2段タブ ---
@@ -244,9 +268,9 @@
       else if (state.sessionTab === 'hits') refreshRates(prof);
     };
     const ts = document.getElementById('total-spins');
-    ts.oninput = () => { s.total_spins = parseInt(ts.value || '0', 10) || 0; onSpins(); };
+    if (ts && !autoG) ts.oninput = () => { s.total_spins = parseInt(ts.value || '0', 10) || 0; onSpins(); };
     const ss = document.getElementById('start-spins');
-    ss.oninput = () => { s.start_spins = parseInt(ss.value || '0', 10) || 0; onSpins(); };
+    if (ss) ss.oninput = () => { s.start_spins = parseInt(ss.value || '0', 10) || 0; onSpins(); };
     // tabs
     document.querySelectorAll('[data-stab]').forEach(b =>
       b.onclick = () => { state.sessionTab = b.getAttribute('data-stab'); renderSession(); });
@@ -379,11 +403,22 @@
     const s = state.active;
     return `
       <div class="card">
+        <h2>実践情報</h2>
+        <div class="edit-grid">
+          <label class="field" style="margin:0"><span>店舗</span>
+            <input id="set-store" value="${esc(s.store || '')}" placeholder="店名" /></label>
+          <label class="field" style="margin:0"><span>台番</span>
+            <input id="set-machineno" inputmode="numeric" value="${esc(s.machineNo || '')}" placeholder="台番号" /></label>
+        </div>
+        <label class="field" style="margin:8px 0 0"><span>日付</span>
+          <input id="set-date" type="date" value="${esc(s.date || '')}" /></label>
+      </div>
+      <div class="card">
         <h2>このセッション</h2>
         <label class="field"><span>有効G数（任意・分母に使う場合）</span>
           <input id="set-validg" inputmode="numeric" value="${s.valid_g || ''}" placeholder="0" /></label>
         <label class="field"><span>メモ</span>
-          <textarea id="set-note" rows="2" placeholder="台番・所感など">${esc(s.note)}</textarea></label>
+          <textarea id="set-note" rows="2" placeholder="所感など">${esc(s.note)}</textarea></label>
       </div>
       <div class="card">
         <h2>セッション操作</h2>
@@ -447,6 +482,12 @@
     if (vg) vg.oninput = () => { s.valid_g = parseInt(vg.value || '0', 10) || 0; saveActive(); };
     const note = document.getElementById('set-note');
     if (note) note.oninput = () => { s.note = note.value; saveActive(); };
+    const st = document.getElementById('set-store');
+    if (st) st.oninput = () => { s.store = st.value; saveActive(); };
+    const mno = document.getElementById('set-machineno');
+    if (mno) mno.oninput = () => { s.machineNo = mno.value; saveActive(); };
+    const dt = document.getElementById('set-date');
+    if (dt) dt.oninput = () => { s.date = dt.value; saveActive(); };
     const arch = document.getElementById('sm-archive');
     if (arch) arch.onclick = async () => { await archiveSession(); render(); toast('履歴に保存しました'); };
     const sw = document.getElementById('sm-switch');
@@ -589,32 +630,15 @@
   function editProfile(profile) {
     state.editing = profile
       ? ensurePages(JSON.parse(JSON.stringify(profile)))
-      : ensurePages({ id: uid('p'), machine: '', bonus_types: ['BB', 'RB'], hit_triggers: [], hit_extra_fields: [], counters: [], metrics: [], createdAt: Date.now() });
+      : ensurePages({ id: uid('p'), machine: '', totalGMode: 'manual', bonus_types: ['BB', 'RB'], hit_triggers: [], hit_extra_fields: [], counters: [], metrics: [], createdAt: Date.now() });
+    openAccs = new Set(); // 機種を開くたびに全セクションを畳んだ状態から始める
     state.tab = 'edit'; renderEditor();
   }
 
   function renderEditor() {
     const e = state.editing;
-    const counterOpts = (sel) => e.counters.map(c => `<option value="counter:${esc(c.key)}" ${sel === 'counter:' + c.key ? 'selected' : ''}>${esc(c.label)}</option>`).join('');
-    const pageOpts = (sel) => e.pages.map(pg => `<option value="${esc(pg.id)}" ${sel === pg.id ? 'selected' : ''}>${esc(pg.name)}</option>`).join('');
-    // 大当たり契機・グループ・種別を判別メトリックのソースに使えるようにする
-    const hitOpts = (sel) => {
-      let html = '';
-      (e.hit_triggers || []).forEach(t => {
-        const v = 'hit:trigger=' + t.key;
-        html += `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>契機: ${esc(t.label || t.key)}</option>`;
-      });
-      [...new Set((e.hit_triggers || []).map(t => t.group || ''))].forEach(g => {
-        const v = 'hit:triggerGroup=' + g;
-        html += `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>契機グループ: ${esc(groupLabel(g))}</option>`;
-      });
-      (e.bonus_types || []).forEach(t => {
-        const v = 'hit:type=' + t;
-        html += `<option value="${esc(v)}" ${sel === v ? 'selected' : ''}>種別: ${esc(t)}</option>`;
-      });
-      return html;
-    };
-    const srcOpts = (sel) => counterOpts(sel) + hitOpts(sel);
+    // カウンターの母数サマリー文言
+    const denomSummary = (c) => { const dt = counterDenomTokens(c); return (dt && dt.length) ? '母数: ' + formulaText(dt, e) : 'カウントのみ'; };
 
     $app.innerHTML = `
       <div class="screen-head">
@@ -626,110 +650,101 @@
       <div class="card">
         <label class="field"><span>機種名</span>
           <input id="ed-machine" value="${esc(e.machine)}" placeholder="例 ヴヴヴ2 / 東京グール" /></label>
+        <label class="field" style="margin-bottom:0"><span>総Gのカウント方法</span>
+          <select id="ed-totalg">
+            <option value="manual" ${e.totalGMode !== 'auto' ? 'selected' : ''}>手動で入力</option>
+            <option value="auto" ${e.totalGMode === 'auto' ? 'selected' : ''}>大当たり履歴のG数を合計して自動計算</option>
+          </select></label>
       </div>
 
-      <div class="card">
-        <div class="row spread" style="margin-bottom:8px"><h2 style="margin:0">カウント画面（タブ）</h2>
-          <button class="btn small" id="add-page">＋ 追加</button></div>
-        <div class="muted small" style="margin-bottom:8px">タブ名は編集できます。各カウンターをどの画面に置くか割り当て。</div>
+      ${accCard('pages', 'カウント画面（タブ）', e.pages.length, `
+        <div class="muted small" style="margin-bottom:8px">実践中の「カウント画面」タブになります。行をタップで編集。</div>
         <div id="ed-pages">
           ${e.pages.map((pg, i) => `
-            <div class="ed-sort-row">
+            <div class="ed-sort-row tap-row" data-editpg="${i}">
               <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-              <input data-pg-name="${i}" value="${esc(pg.name)}" />
-              <button class="btn ghost small" data-delpg="${i}" ${e.pages.length <= 1 ? 'disabled' : ''}>削除</button>
+              <div class="tr-main"><div class="tr-name">${esc(pg.name) || '(無名)'}</div></div>
+              <button class="btn ghost small" data-delpg="${i}" ${e.pages.length <= 1 ? 'disabled' : ''}>✕</button>
             </div>`).join('')}
         </div>
-      </div>
+        <button class="btn small block" id="add-page" style="margin-top:8px">＋ カウント画面を追加</button>`)}
 
-      <div class="card">
-        <div class="row spread" style="margin-bottom:8px"><h2 style="margin:0">大当たり種別（履歴のタップ選択肢）</h2>
-          <button class="btn small" id="add-type">＋ 追加</button></div>
-        <div class="muted small" style="margin-bottom:8px">名前を編集できます。並び順＝履歴タブの率カード順。</div>
+      ${accCard('types', '大当たり種別（履歴のタップ選択肢）', e.bonus_types.length, `
+        <div class="muted small" style="margin-bottom:8px">並び順＝履歴タブの率カード順。行をタップで編集。</div>
         <div id="ed-types">
-          ${e.bonus_types.map((t, i) => `
-            <div class="ed-sort-row">
+          ${e.bonus_types.length ? e.bonus_types.map((t, i) => `
+            <div class="ed-sort-row tap-row" data-edittype="${i}">
               <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-              <input data-type-name="${i}" value="${esc(t)}" />
+              <div class="tr-main"><div class="tr-name">${esc(t) || '(無名)'}</div></div>
               <button class="btn ghost small" data-deltype="${i}">✕</button>
-            </div>`).join('')}
+            </div>`).join('') : '<div class="muted small">まだありません。「＋追加」から。</div>'}
         </div>
-      </div>
+        <button class="btn small block" id="add-type" style="margin-top:8px">＋ 大当たり種別を追加</button>`)}
 
-      <div class="card">
-        <div class="row spread" style="margin-bottom:8px"><h2 style="margin:0">大当たり契機（履歴のタップ選択肢）</h2>
-          <button class="btn small" id="add-trigger">＋ 追加</button></div>
-        <div class="muted small" style="margin-bottom:8px">液晶ゾーン・レア役・状態を1リストに。1大当たり＝1契機（手動選択）。判別メトリックのソースに使えます（振り分け%・分母＝大当たり回数）。</div>
+      ${accCard('triggers', '大当たり契機（履歴のタップ選択肢）', e.hit_triggers.length, `
+        <div class="muted small" style="margin-bottom:8px">液晶ゾーン・レア役・状態を1リストに。1大当たり＝1契機（手動選択）。判別メトリックのソースに使えます。行をタップで編集。</div>
         <div id="ed-triggers">
-          ${e.hit_triggers.map((t, i) => `
-            <div class="ed-sort-row">
+          ${e.hit_triggers.length ? e.hit_triggers.map((t, i) => `
+            <div class="ed-sort-row tap-row" data-edittrg="${i}">
               <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-              <input data-trg-label="${i}" value="${esc(t.label)}" placeholder="例 100ゾーン / 強チェ / 直撃" />
-              <select data-trg-group="${i}" class="trg-gsel">
-                ${TRIGGER_GROUPS.map(g => `<option value="${g.value}" ${(t.group || '') === g.value ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
-              </select>
+              <div class="tr-main"><div class="tr-name">${esc(t.label) || '(無名)'}</div>
+                <div class="tr-sub">${esc(groupLabel(t.group))}</div></div>
               <button class="btn ghost small" data-deltrg="${i}">✕</button>
-            </div>`).join('')}
+            </div>`).join('') : '<div class="muted small">まだありません。「＋追加」から。</div>'}
         </div>
-      </div>
+        <button class="btn small block" id="add-trigger" style="margin-top:8px">＋ 大当たり契機を追加</button>`)}
 
-      <div class="card">
-        <div class="row spread" style="margin-bottom:8px"><h2 style="margin:0">カウンター</h2>
-          <button class="btn small" id="add-counter">＋ 追加</button></div>
-        <div class="muted small" style="margin-bottom:8px">設定判別に効くものだけ絞って登録</div>
+      ${accCard('counters', 'カウンター', e.counters.length, `
+        <div class="muted small" style="margin-bottom:8px">設定判別に効くものだけ絞って登録。行をタップで編集。</div>
         <div id="ed-counters">
-          ${e.counters.map((c, i) => `
-            <div class="edit-item">
-              <div class="eh">
-                <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-                <span class="nm">${esc(c.label) || '(無名)'}</span>
-                <button class="del" data-delc="${i}">削除</button>
-              </div>
-              <div class="edit-grid">
-                <label class="field" style="margin:0"><span>ラベル</span>
-                  <input data-c-label="${i}" value="${esc(c.label)}" /></label>
-                <label class="field" style="margin:0"><span>画面</span>
-                  <select data-c-page="${i}">${pageOpts(c.pageId)}</select></label>
-              </div>
-              <div class="edit-grid">
-                <label class="field" style="margin:8px 0 0"><span>母数（表示の分母）</span>
-                  <select data-c-denom="${i}">
-                    <option value="" ${!c.denominator ? 'selected' : ''}>なし（カウントのみ）</option>
-                    <option value="total_spins" ${c.denominator === 'total_spins' ? 'selected' : ''}>実践G（総−スタート）</option>
-                    <option value="valid_g" ${c.denominator === 'valid_g' ? 'selected' : ''}>有効G数</option>
-                    ${counterOpts(c.denominator)}
-                  </select></label>
-                <label class="field" style="margin:8px 0 0"><span>表示</span>
-                  <select data-c-dispmode="${i}">
-                    <option value="both" ${(c.display_mode || 'both') === 'both' ? 'selected' : ''}>分数と％両方</option>
-                    <option value="frac" ${c.display_mode === 'frac' ? 'selected' : ''}>分数のみ（1/X）</option>
-                    <option value="percent" ${c.display_mode === 'percent' ? 'selected' : ''}>％のみ</option>
-                  </select></label>
-              </div>
-            </div>`).join('')}
+          ${e.counters.length ? e.counters.map((c, i) => `
+            <div class="ed-sort-row tap-row" data-editc="${i}">
+              <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
+              <div class="tr-main"><div class="tr-name">${esc(c.label) || '(無名)'}</div>
+                <div class="tr-sub">${esc((e.pages.find(p => p.id === c.pageId) || {}).name || '—')} · ${esc(denomSummary(c))}</div></div>
+              <button class="btn ghost small" data-delc="${i}">✕</button>
+            </div>`).join('') : '<div class="muted small">まだありません。「＋追加」から。</div>'}
         </div>
-      </div>
+        <button class="btn small block" id="add-counter" style="margin-top:8px">＋ カウンターを追加</button>`)}
 
-      <div class="card">
-        <div class="row spread" style="margin-bottom:8px"><h2 style="margin:0">判別メトリック</h2>
-          <button class="btn small" id="add-metric">＋ 追加</button></div>
-        <div class="muted small" style="margin-bottom:8px">ソース(分子)と分母を計算式で作成→設定別の理論値を登録（分数1/X か %振り分け）。空欄の設定は判別に使いません。</div>
+      ${accCard('metrics', '判別メトリック', e.metrics.length, `
+        <div class="muted small" style="margin-bottom:8px">ソース(分子)と分母を計算式で作成→設定別の理論値を登録。行をタップで編集。</div>
         <div id="ed-metrics">
-          ${e.metrics.map((m, i) => renderMetricEditor(m, i, e)).join('')}
+          ${e.metrics.length ? e.metrics.map((m, i) => `
+            <div class="ed-sort-row tap-row" data-editm="${i}">
+              <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
+              <div class="tr-main"><div class="tr-name">${esc(m.label) || '(無名メトリック)'}</div>
+                <div class="tr-sub">${m.mode === 'percent' ? '％振り分け' : '分数 1/X'}${m.include === false ? ' · 統合しない' : ' · 統合'}</div></div>
+              <button class="btn ghost small" data-delm="${i}">✕</button>
+            </div>`).join('') : '<div class="muted small">まだありません。「＋追加」から。</div>'}
         </div>
-      </div>
+        <button class="btn small block" id="add-metric" style="margin-top:8px">＋ 判別メトリックを追加</button>`)}
 
       <button class="btn danger block" id="ed-delete" ${state.profiles.find(p => p.id === e.id) ? '' : 'style="display:none"'}>この機種を削除</button>
     `;
 
+    // アコーディオン開閉
+    document.querySelectorAll('[data-acc-toggle]').forEach(h => h.onclick = () => {
+      const key = h.getAttribute('data-acc-toggle');
+      const card = h.closest('.acc');
+      if (openAccs.has(key)) { openAccs.delete(key); card.classList.remove('open'); }
+      else { openAccs.add(key); card.classList.add('open'); }
+    });
+
     document.getElementById('ed-machine').oninput = (ev) => e.machine = ev.target.value;
+    document.getElementById('ed-totalg').onchange = (ev) => { e.totalGMode = ev.target.value; };
 
     // pages
-    document.getElementById('add-page').onclick = () => { e.pages.push({ id: uid('pg'), name: 'カウント' + (e.pages.length + 1) }); renderEditor(); };
-    document.querySelectorAll('[data-pg-name]').forEach(inp =>
-      inp.oninput = () => { e.pages[+inp.getAttribute('data-pg-name')].name = inp.value; });
+    // カウント画面（pages）＝ ポップアップで追加/編集
+    document.getElementById('add-page').onclick = () => { openAccs.add('pages'); openPageModal(-1); };
+    document.querySelectorAll('[data-editpg]').forEach(row => row.onclick = (ev) => {
+      if (ev.target.closest('.drag-handle') || ev.target.closest('[data-delpg]')) return;
+      openPageModal(+row.getAttribute('data-editpg'));
+    });
     document.querySelectorAll('[data-delpg]').forEach(b =>
-      b.onclick = () => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        if (e.pages.length <= 1) return;
         const i = +b.getAttribute('data-delpg'); const removed = e.pages[i].id;
         e.pages.splice(i, 1);
         e.counters.forEach(c => { if (c.pageId === removed) c.pageId = e.pages[0].id; });
@@ -737,71 +752,45 @@
       });
     bindDragReorder(document.getElementById('ed-pages'), '.ed-sort-row', e.pages, renderEditor);
 
-    // 種別（prompt はPWAで不安定なため自前モーダル）
-    document.getElementById('add-type').onclick = () => {
-      openModal(`
-        <h3>大当たり種別を追加</h3>
-        <label class="field"><span>種別名（例 BB / RB / ART / AT / CZ）</span>
-          <input id="bt-input" placeholder="種別名" /></label>
-        <div class="mfoot">
-          <button class="btn ghost" data-close>キャンセル</button>
-          <button class="btn primary" id="bt-add">追加</button>
-        </div>
-      `, (root) => {
-        const inp = root.querySelector('#bt-input');
-        setTimeout(() => inp.focus(), 60);
-        const add = () => { const v = inp.value.trim(); if (v) { e.bonus_types.push(v); closeModal(); renderEditor(); } };
-        root.querySelector('#bt-add').onclick = add;
-        inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') add(); });
-      });
-    };
-    document.querySelectorAll('[data-type-name]').forEach(inp =>
-      inp.oninput = () => { e.bonus_types[+inp.getAttribute('data-type-name')] = inp.value; });
+    // 大当たり種別（types）＝ ポップアップで追加/編集
+    document.getElementById('add-type').onclick = () => { openAccs.add('types'); openTypeModal(-1); };
+    document.querySelectorAll('[data-edittype]').forEach(row => row.onclick = (ev) => {
+      if (ev.target.closest('.drag-handle') || ev.target.closest('[data-deltype]')) return;
+      openTypeModal(+row.getAttribute('data-edittype'));
+    });
     document.querySelectorAll('[data-deltype]').forEach(x =>
-      x.onclick = () => { e.bonus_types.splice(+x.getAttribute('data-deltype'), 1); renderEditor(); });
+      x.onclick = (ev) => { ev.stopPropagation(); e.bonus_types.splice(+x.getAttribute('data-deltype'), 1); renderEditor(); });
     bindDragReorder(document.getElementById('ed-types'), '.ed-sort-row', e.bonus_types, renderEditor);
 
-    // hit_triggers（大当たり契機）
-    document.getElementById('add-trigger').onclick = () => { e.hit_triggers.push({ key: uid('t'), label: '', group: 'zone' }); renderEditor(); };
-    document.querySelectorAll('[data-trg-label]').forEach(inp =>
-      inp.oninput = () => { e.hit_triggers[+inp.getAttribute('data-trg-label')].label = inp.value; });
-    document.querySelectorAll('[data-trg-group]').forEach(sel =>
-      sel.onchange = () => { e.hit_triggers[+sel.getAttribute('data-trg-group')].group = sel.value; });
+    // hit_triggers（大当たり契機）＝ ポップアップで追加/編集
+    document.getElementById('add-trigger').onclick = () => { openAccs.add('triggers'); openTriggerModal(-1); };
+    document.querySelectorAll('[data-edittrg]').forEach(row => row.onclick = (ev) => {
+      if (ev.target.closest('.drag-handle') || ev.target.closest('[data-deltrg]')) return;
+      openTriggerModal(+row.getAttribute('data-edittrg'));
+    });
     document.querySelectorAll('[data-deltrg]').forEach(b =>
-      b.onclick = () => { e.hit_triggers.splice(+b.getAttribute('data-deltrg'), 1); renderEditor(); });
+      b.onclick = (ev) => { ev.stopPropagation(); e.hit_triggers.splice(+b.getAttribute('data-deltrg'), 1); renderEditor(); });
     bindDragReorder(document.getElementById('ed-triggers'), '.ed-sort-row', e.hit_triggers, renderEditor);
 
-    // counters
-    document.getElementById('add-counter').onclick = () => { e.counters.push({ key: uid('c'), label: '', input: 'tap', pageId: e.pages[0].id }); renderEditor(); };
+    // counters ＝ ポップアップで追加/編集
+    document.getElementById('add-counter').onclick = () => { openAccs.add('counters'); openCounterModal(-1); };
+    document.querySelectorAll('[data-editc]').forEach(row => row.onclick = (ev) => {
+      if (ev.target.closest('.drag-handle') || ev.target.closest('[data-delc]')) return;
+      openCounterModal(+row.getAttribute('data-editc'));
+    });
     document.querySelectorAll('[data-delc]').forEach(b =>
-      b.onclick = () => { e.counters.splice(+b.getAttribute('data-delc'), 1); renderEditor(); });
-    document.querySelectorAll('[data-c-label]').forEach(inp =>
-      inp.oninput = () => { e.counters[+inp.getAttribute('data-c-label')].label = inp.value; });
-    document.querySelectorAll('[data-c-page]').forEach(sel =>
-      sel.onchange = () => { e.counters[+sel.getAttribute('data-c-page')].pageId = sel.value; });
-    document.querySelectorAll('[data-c-denom]').forEach(sel =>
-      sel.onchange = () => {
-        e.counters[+sel.getAttribute('data-c-denom')].denominator = sel.value;
-      });
-    document.querySelectorAll('[data-c-dispmode]').forEach(sel =>
-      sel.onchange = () => {
-        e.counters[+sel.getAttribute('data-c-dispmode')].display_mode = sel.value;
-      });
-    bindDragReorder(document.getElementById('ed-counters'), '.edit-item', e.counters, renderEditor);
+      b.onclick = (ev) => { ev.stopPropagation(); e.counters.splice(+b.getAttribute('data-delc'), 1); renderEditor(); });
+    bindDragReorder(document.getElementById('ed-counters'), '.ed-sort-row', e.counters, renderEditor);
 
-    // metrics
-    document.getElementById('add-metric').onclick = () => {
-      const srcTok = e.counters[0] ? [{ var: 'counter', ref: e.counters[0].key }]
-        : (e.hit_triggers[0] ? [{ var: 'trig', ref: e.hit_triggers[0].key }] : []);
-      const isHit = !e.counters[0] && !!e.hit_triggers[0];
-      e.metrics.push({
-        key: uid('m'), label: '',
-        sourceTokens: srcTok, denomTokens: [{ var: isHit ? 'hits' : 'played_g' }],
-        mode: isHit ? 'percent' : 'fraction', include: true, settings: {}
-      });
-      renderEditor();
-    };
-    bindMetricEvents();
+    // metrics ＝ ポップアップで追加/編集
+    document.getElementById('add-metric').onclick = () => { openAccs.add('metrics'); openMetricModal(-1); };
+    document.querySelectorAll('[data-editm]').forEach(row => row.onclick = (ev) => {
+      if (ev.target.closest('.drag-handle') || ev.target.closest('[data-delm]')) return;
+      openMetricModal(+row.getAttribute('data-editm'));
+    });
+    document.querySelectorAll('[data-delm]').forEach(b =>
+      b.onclick = (ev) => { ev.stopPropagation(); e.metrics.splice(+b.getAttribute('data-delm'), 1); renderEditor(); });
+    bindDragReorder(document.getElementById('ed-metrics'), '.ed-sort-row', e.metrics, renderEditor);
 
     document.getElementById('ed-back').onclick = () => { state.editing = null; state.tab = 'profiles'; render(); };
     document.getElementById('ed-save').onclick = saveEditor;
@@ -820,37 +809,226 @@
       <span class="ftxt ${txt ? '' : 'ph'}">${txt ? esc(txt) : '（タップして式を作成）'}</span>
       <span class="fedit">式</span></button>`;
   }
-  function renderMetricEditor(m, i, prof) {
-    return `<div class="edit-item">
-      <div class="eh">
-        <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-        <span class="nm">${esc(m.label) || '(無名メトリック)'}</span>
-        <button class="del" data-delm="${i}">削除</button>
+  // アコーディオン・カード（見出しタップで開閉・件数バッジ付き）
+  function accCard(key, title, count, bodyHtml) {
+    const open = openAccs.has(key);
+    return `<div class="acc card ${open ? 'open' : ''}">
+      <button class="acc-head" data-acc-toggle="${key}">
+        <span class="acc-title">${esc(title)}<span class="acc-count">${count}</span></span>
+        <span class="acc-chev">▾</span>
+      </button>
+      <div class="acc-body">${bodyHtml}</div>
+    </div>`;
+  }
+  // 計算式ボタンの表示テキストをその場更新（モーダル内・再描画なし）
+  function updateFbtn(root, attr, toks, prof) {
+    const b = root.querySelector('[' + attr + '] .ftxt');
+    if (!b) return;
+    const txt = formulaText(toks, prof);
+    b.textContent = txt || '（タップして式を作成）';
+    b.classList.toggle('ph', !txt);
+  }
+
+  /* ---------- カウント画面（タブ）：追加/編集モーダル ---------- */
+  function openPageModal(idx) {
+    const e = state.editing;
+    const isNew = idx < 0;
+    const w = isNew ? { id: uid('pg'), name: '' } : { ...e.pages[idx] };
+    openModal(`
+      <h3>${isNew ? 'カウント画面を追加' : 'カウント画面を編集'}</h3>
+      <label class="field"><span>タブ名</span>
+        <input id="pm-name" value="${esc(w.name)}" placeholder="例 通常時 / 小役 / AT中" /></label>
+      <div class="mfoot">
+        ${(!isNew && e.pages.length > 1) ? '<button class="btn danger" id="pm-del">削除</button>' : ''}
+        <button class="btn primary" id="pm-save">保存</button>
       </div>
-      <label class="field" style="margin:8px 0 0"><span>ラベル</span>
-        <input data-m-label="${i}" value="${esc(m.label)}" placeholder="例 強チェリー / ベル合算" /></label>
-      <div class="field" style="margin:8px 0 0"><span>ソース（分子）＝計算式</span>
-        ${fbtn(metricTokens(m, 'source'), prof, 'data-m-fsrc', i)}</div>
-      <div class="field" style="margin:8px 0 0"><span>分母＝計算式</span>
-        ${fbtn(metricTokens(m, 'denom'), prof, 'data-m-fden', i)}</div>
+    `, (root) => {
+      setTimeout(() => root.querySelector('#pm-name').focus(), 60);
+      root.querySelector('#pm-save').onclick = () => {
+        w.name = root.querySelector('#pm-name').value.trim();
+        if (!w.name) { toast('タブ名を入力してください'); return; }
+        if (isNew) e.pages.push(w); else e.pages[idx] = w;
+        closeModal(); renderEditor();
+      };
+      const del = root.querySelector('#pm-del');
+      if (del) del.onclick = () => {
+        const removed = e.pages[idx].id;
+        e.pages.splice(idx, 1);
+        e.counters.forEach(c => { if (c.pageId === removed) c.pageId = e.pages[0].id; });
+        closeModal(); renderEditor();
+      };
+    });
+  }
+
+  /* ---------- 大当たり種別：追加/編集モーダル ---------- */
+  function openTypeModal(idx) {
+    const e = state.editing;
+    const isNew = idx < 0;
+    const cur = isNew ? '' : e.bonus_types[idx];
+    openModal(`
+      <h3>${isNew ? '大当たり種別を追加' : '大当たり種別を編集'}</h3>
+      <label class="field"><span>種別名（例 BB / RB / ART / AT / CZ）</span>
+        <input id="tym-name" value="${esc(cur)}" placeholder="種別名" /></label>
+      <div class="mfoot">
+        ${isNew ? '' : '<button class="btn danger" id="tym-del">削除</button>'}
+        <button class="btn primary" id="tym-save">保存</button>
+      </div>
+    `, (root) => {
+      const inp = root.querySelector('#tym-name');
+      setTimeout(() => inp.focus(), 60);
+      const save = () => {
+        const v = inp.value.trim();
+        if (!v) { toast('種別名を入力してください'); return; }
+        if (isNew) e.bonus_types.push(v); else e.bonus_types[idx] = v;
+        closeModal(); renderEditor();
+      };
+      root.querySelector('#tym-save').onclick = save;
+      inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') save(); });
+      if (!isNew) root.querySelector('#tym-del').onclick = () => { e.bonus_types.splice(idx, 1); closeModal(); renderEditor(); };
+    });
+  }
+
+  /* ---------- 大当たり契機：追加/編集モーダル ---------- */
+  function openTriggerModal(idx) {
+    const e = state.editing;
+    const isNew = idx < 0;
+    const w = isNew ? { key: uid('t'), label: '', group: 'zone' } : { ...e.hit_triggers[idx] };
+    openModal(`
+      <h3>${isNew ? '大当たり契機を追加' : '大当たり契機を編集'}</h3>
+      <label class="field"><span>名前</span>
+        <input id="tm-label" value="${esc(w.label)}" placeholder="例 100ゾーン / 強チェ / 直撃" /></label>
+      <label class="field"><span>グループ</span>
+        <select id="tm-group">
+          ${TRIGGER_GROUPS.map(g => `<option value="${g.value}" ${(w.group || '') === g.value ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
+        </select></label>
+      <div class="mfoot">
+        ${isNew ? '' : '<button class="btn danger" id="tm-del">削除</button>'}
+        <button class="btn primary" id="tm-save">保存</button>
+      </div>
+    `, (root) => {
+      setTimeout(() => root.querySelector('#tm-label').focus(), 60);
+      root.querySelector('#tm-save').onclick = () => {
+        w.label = root.querySelector('#tm-label').value.trim();
+        w.group = root.querySelector('#tm-group').value;
+        if (!w.label) { toast('名前を入力してください'); return; }
+        if (isNew) e.hit_triggers.push(w); else e.hit_triggers[idx] = w;
+        closeModal(); renderEditor();
+      };
+      if (!isNew) root.querySelector('#tm-del').onclick = () => { e.hit_triggers.splice(idx, 1); closeModal(); renderEditor(); };
+    });
+  }
+
+  /* ---------- カウンター：追加/編集モーダル ---------- */
+  function openCounterModal(idx) {
+    const e = state.editing;
+    const isNew = idx < 0;
+    const w = isNew
+      ? { key: uid('c'), label: '', input: 'tap', pageId: e.pages[0].id }
+      : JSON.parse(JSON.stringify(e.counters[idx]));
+    const pageOpts = e.pages.map(pg => `<option value="${esc(pg.id)}" ${w.pageId === pg.id ? 'selected' : ''}>${esc(pg.name)}</option>`).join('');
+    openModal(`
+      <h3>${isNew ? 'カウンターを追加' : 'カウンターを編集'}</h3>
+      <label class="field"><span>ラベル</span>
+        <input id="cm-label" value="${esc(w.label)}" placeholder="例 強チェリー / 共通ベル" /></label>
+      <label class="field"><span>画面（タブ）</span>
+        <select id="cm-page">${pageOpts}</select></label>
+      <div class="field"><span>母数（表示の分母）＝計算式</span>
+        ${fbtn(counterDenomTokens(w), e, 'data-cm-fden', 0)}
+        <div class="muted small" style="margin-top:4px">空のままなら分母なし（カウントのみ表示）</div></div>
+      <label class="field"><span>表示</span>
+        <select id="cm-disp">
+          <option value="both" ${(w.display_mode || 'both') === 'both' ? 'selected' : ''}>分数と％両方</option>
+          <option value="frac" ${w.display_mode === 'frac' ? 'selected' : ''}>分数のみ（1/X）</option>
+          <option value="percent" ${w.display_mode === 'percent' ? 'selected' : ''}>％のみ</option>
+        </select></label>
+      <div class="mfoot">
+        ${isNew ? '' : '<button class="btn danger" id="cm-del">削除</button>'}
+        <button class="btn primary" id="cm-save">保存</button>
+      </div>
+    `, (root) => {
+      root.querySelector('[data-cm-fden]').onclick = () =>
+        openFormulaBuilder('母数（分母）の計算式', counterDenomTokens(w), e, null, (toks) => {
+          w.denomTokens = toks; delete w.denominator; updateFbtn(root, 'data-cm-fden', toks, e);
+        });
+      root.querySelector('#cm-save').onclick = () => {
+        w.label = root.querySelector('#cm-label').value.trim();
+        w.pageId = root.querySelector('#cm-page').value;
+        w.display_mode = root.querySelector('#cm-disp').value;
+        if (!w.label) { toast('ラベルを入力してください'); return; }
+        if (isNew) e.counters.push(w); else e.counters[idx] = w;
+        closeModal(); renderEditor();
+      };
+      if (!isNew) root.querySelector('#cm-del').onclick = () => { e.counters.splice(idx, 1); closeModal(); renderEditor(); };
+    });
+  }
+
+  /* ---------- 判別メトリック：追加/編集モーダル ---------- */
+  function openMetricModal(idx) {
+    const e = state.editing;
+    const isNew = idx < 0;
+    let w;
+    if (isNew) {
+      const srcTok = e.counters[0] ? [{ var: 'counter', ref: e.counters[0].key }]
+        : (e.hit_triggers[0] ? [{ var: 'trig', ref: e.hit_triggers[0].key }] : []);
+      const isHit = !e.counters[0] && !!e.hit_triggers[0];
+      w = { key: uid('m'), label: '', sourceTokens: srcTok, denomTokens: [{ var: isHit ? 'hits' : 'played_g' }], mode: isHit ? 'percent' : 'fraction', include: true, settings: {} };
+    } else {
+      w = JSON.parse(JSON.stringify(e.metrics[idx]));
+      w.sourceTokens = metricTokens(w, 'source').map(t => ({ ...t }));
+      w.denomTokens = metricTokens(w, 'denom').map(t => ({ ...t }));
+      delete w.source; delete w.denominator;
+    }
+    openModal(`
+      <h3>${isNew ? '判別メトリックを追加' : '判別メトリックを編集'}</h3>
+      <label class="field"><span>ラベル</span>
+        <input id="mm-label" value="${esc(w.label)}" placeholder="例 強チェリー / ベル合算" /></label>
+      <div class="field"><span>ソース（分子）＝計算式</span>
+        ${fbtn(w.sourceTokens, e, 'data-mm-fsrc', 0)}</div>
+      <div class="field"><span>分母＝計算式</span>
+        ${fbtn(w.denomTokens, e, 'data-mm-fden', 0)}</div>
       <div class="edit-grid">
-        <label class="field" style="margin:8px 0 0"><span>モード</span>
-          <select data-m-mode="${i}">
-            <option value="fraction" ${m.mode === 'fraction' ? 'selected' : ''}>分数 1/X</option>
-            <option value="percent" ${m.mode === 'percent' ? 'selected' : ''}>％振り分け</option>
+        <label class="field" style="margin:0"><span>モード</span>
+          <select id="mm-mode">
+            <option value="fraction" ${w.mode === 'fraction' ? 'selected' : ''}>分数 1/X</option>
+            <option value="percent" ${w.mode === 'percent' ? 'selected' : ''}>％振り分け</option>
           </select></label>
-        <label class="field" style="margin:8px 0 0"><span>総合判別に統合</span>
-          <select data-m-incl="${i}">
-            <option value="1" ${m.include !== false ? 'selected' : ''}>統合する</option>
-            <option value="0" ${m.include === false ? 'selected' : ''}>統合しない</option>
+        <label class="field" style="margin:0"><span>総合判別に統合</span>
+          <select id="mm-incl">
+            <option value="1" ${w.include !== false ? 'selected' : ''}>統合する</option>
+            <option value="0" ${w.include === false ? 'selected' : ''}>統合しない</option>
           </select></label>
       </div>
-      <label class="field" style="margin:8px 0 0"><span>設定別 理論値（${m.mode === 'percent' ? '%' : '分数の X'}）</span></label>
+      <label class="field" style="margin:10px 0 0"><span id="mm-set-h">設定別 理論値（${w.mode === 'percent' ? '%' : '分数の X'}）</span></label>
       <div class="settings6">
         ${Engine.SETTINGS.map(sv => `<div class="sc"><span>${sv}</span>
-          <input data-m-set="${i}:${sv}" inputmode="decimal" value="${esc(m.settings && m.settings[sv] != null ? m.settings[sv] : '')}" /></div>`).join('')}
+          <input data-mm-set="${sv}" inputmode="decimal" value="${esc(w.settings && w.settings[sv] != null ? w.settings[sv] : '')}" /></div>`).join('')}
       </div>
-    </div>`;
+      <div class="mfoot">
+        ${isNew ? '' : '<button class="btn danger" id="mm-del">削除</button>'}
+        <button class="btn primary" id="mm-save">保存</button>
+      </div>
+    `, (root) => {
+      root.querySelector('[data-mm-fsrc]').onclick = () =>
+        openFormulaBuilder('ソース（分子）の計算式', w.sourceTokens, e, w.key, (toks) => { w.sourceTokens = toks; updateFbtn(root, 'data-mm-fsrc', toks, e); });
+      root.querySelector('[data-mm-fden]').onclick = () =>
+        openFormulaBuilder('分母の計算式', w.denomTokens, e, w.key, (toks) => { w.denomTokens = toks; updateFbtn(root, 'data-mm-fden', toks, e); });
+      root.querySelector('#mm-mode').onchange = (ev) => {
+        w.mode = ev.target.value;
+        root.querySelector('#mm-set-h').textContent = '設定別 理論値（' + (w.mode === 'percent' ? '%' : '分数の X') + '）';
+      };
+      root.querySelector('#mm-save').onclick = () => {
+        w.label = root.querySelector('#mm-label').value.trim();
+        w.mode = root.querySelector('#mm-mode').value;
+        w.include = root.querySelector('#mm-incl').value === '1';
+        const settings = {};
+        root.querySelectorAll('[data-mm-set]').forEach(inp => { if (inp.value !== '') settings[inp.getAttribute('data-mm-set')] = parseFloat(inp.value); });
+        w.settings = settings;
+        if (!w.label) { toast('ラベルを入力してください'); return; }
+        if (isNew) e.metrics.push(w); else e.metrics[idx] = w;
+        closeModal(); renderEditor();
+      };
+      if (!isNew) root.querySelector('#mm-del').onclick = () => { e.metrics.splice(idx, 1); closeModal(); renderEditor(); };
+    });
   }
 
   /* ---------- 計算式ビルダー（モーダル） ---------- */
@@ -918,37 +1096,6 @@
       root.querySelector('#fb-save').onclick = () => { onSave(toks); closeModal(); };
       refresh();
     });
-  }
-
-  function bindMetricEvents() {
-    const e = state.editing;
-    document.querySelectorAll('[data-delm]').forEach(b =>
-      b.onclick = () => { e.metrics.splice(+b.getAttribute('data-delm'), 1); renderEditor(); });
-    bindDragReorder(document.getElementById('ed-metrics'), '.edit-item', e.metrics, renderEditor);
-    document.querySelectorAll('[data-m-label]').forEach(inp =>
-      inp.oninput = () => { e.metrics[+inp.getAttribute('data-m-label')].label = inp.value; });
-    document.querySelectorAll('[data-m-fsrc]').forEach(b =>
-      b.onclick = () => {
-        const i = +b.getAttribute('data-m-fsrc'); const m = e.metrics[i];
-        openFormulaBuilder('ソース（分子）の計算式', metricTokens(m, 'source'), e, m.key,
-          (toks) => { m.sourceTokens = toks; delete m.source; renderEditor(); });
-      });
-    document.querySelectorAll('[data-m-fden]').forEach(b =>
-      b.onclick = () => {
-        const i = +b.getAttribute('data-m-fden'); const m = e.metrics[i];
-        openFormulaBuilder('分母の計算式', metricTokens(m, 'denom'), e, m.key,
-          (toks) => { m.denomTokens = toks; delete m.denominator; renderEditor(); });
-      });
-    document.querySelectorAll('[data-m-mode]').forEach(sel =>
-      sel.onchange = () => { e.metrics[+sel.getAttribute('data-m-mode')].mode = sel.value; renderEditor(); });
-    document.querySelectorAll('[data-m-incl]').forEach(sel =>
-      sel.onchange = () => { e.metrics[+sel.getAttribute('data-m-incl')].include = sel.value === '1'; });
-    document.querySelectorAll('[data-m-set]').forEach(inp =>
-      inp.oninput = () => {
-        const [i, sv] = inp.getAttribute('data-m-set').split(':');
-        const m = e.metrics[+i];
-        if (inp.value === '') delete m.settings[sv]; else m.settings[sv] = parseFloat(inp.value);
-      });
   }
 
   async function saveEditor() {
@@ -1055,16 +1202,17 @@
       </div>
       <div id="sync-note" class="muted" style="font-size:12px;margin:-4px 2px 10px">${esc(SYNC.lastMsg || 'クラウド同期：ネット接続時に自動で同期されます（🔄で手動同期）')}</div>
       ${sessions.length ? sessions.map(s => {
-        const d = new Date(s.startedAt);
-        const date = `${d.getMonth() + 1}/${d.getDate()}`;
-        return `<div class="list-item" data-sess="${s.id}">
+        let date = s.date || '';
+        if (!date) { const d = new Date(s.startedAt); date = `${d.getMonth() + 1}/${d.getDate()}`; }
+        const head = [date, s.store, s.machineNo ? ('台' + s.machineNo) : ''].filter(Boolean).join('・');
+        return `<div class="list-item tap-row" data-sess="${s.id}">
           <span class="ti">📊</span>
           <div class="body"><div class="t">${esc(s.machine)}</div>
-            <div class="sub">${date}・総${s.total_spins || 0}G・初当${fmtRate(s.cumG || 0, s.hits || 0)}・当たり${s.hits || 0}回</div></div>
+            <div class="sub">${esc(head)}${head ? '・' : ''}総${s.total_spins || 0}G・初当${fmtRate(s.cumG || 0, s.hits || 0)}・当たり${s.hits || 0}回</div></div>
           <button class="del" data-delsess="${s.id}" style="color:var(--bad);background:none;border:none">削除</button>
         </div>`;
       }).join('')
-        : `<div class="empty"><div class="big">📊</div><p>保存したセッションがここに並びます。<br>実践→設定タブの「保存して終了」で残せます。</p></div>`}
+        : `<div class="empty"><div class="big">📊</div><p>保存したセッションがここに並びます。<br>実践→設定タブの「保存して終了」で残せます。<br>行をタップで編集できます。</p></div>`}
       <div class="muted" style="font-size:12px;margin:18px 2px 8px;display:flex;align-items:center;gap:10px">
         <span>👤 ${esc(Cloud.email() || '未ログイン')}</span>
         <button class="btn" id="logout-btn" style="margin-left:auto;font-size:12px;padding:4px 10px">ログアウト</button>
@@ -1076,6 +1224,12 @@
         const id = b.getAttribute('data-delsess');
         await DB.delSession(id); addTombstone('pc_sessions', id);
         renderHistory(); syncNow(false);
+      });
+    document.querySelectorAll('[data-sess]').forEach(row =>
+      row.onclick = (ev) => {
+        if (ev.target.closest('[data-delsess]')) return;
+        const s = sessions.find(x => x.id === row.getAttribute('data-sess'));
+        if (s) openSessionEditModal(s);
       });
     const syncBtn = document.getElementById('sync-btn');
     if (syncBtn) syncBtn.onclick = async () => {
@@ -1090,15 +1244,75 @@
     };
   }
 
-  /* ---------- モーダル ---------- */
-  function openModal(html, onMount) {
-    $modalRoot.innerHTML = `<div class="modal-back"><div class="modal">${html}</div></div>`;
-    const back = $modalRoot.querySelector('.modal-back');
-    back.onclick = (e) => { if (e.target === back) closeModal(); };
-    $modalRoot.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal);
-    if (onMount) onMount($modalRoot);
+  /* ---------- 保存済み記録：編集モーダル（全項目編集可） ---------- */
+  function openSessionEditModal(s) {
+    let date = s.date || '';
+    if (!date) { const d = new Date(s.startedAt); date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    openModal(`
+      <h3>記録を編集</h3>
+      <label class="field"><span>機種名</span>
+        <input id="se-machine" value="${esc(s.machine || '')}" /></label>
+      <div class="edit-grid">
+        <label class="field" style="margin:0"><span>店舗</span>
+          <input id="se-store" value="${esc(s.store || '')}" placeholder="店名" /></label>
+        <label class="field" style="margin:0"><span>台番</span>
+          <input id="se-no" inputmode="numeric" value="${esc(s.machineNo || '')}" placeholder="台番号" /></label>
+      </div>
+      <label class="field"><span>日付</span>
+        <input id="se-date" type="date" value="${esc(date)}" /></label>
+      <div class="edit-grid">
+        <label class="field" style="margin:0"><span>総G</span>
+          <input id="se-total" inputmode="numeric" value="${s.total_spins || 0}" /></label>
+        <label class="field" style="margin:0"><span>有効G数</span>
+          <input id="se-validg" inputmode="numeric" value="${s.valid_g || 0}" /></label>
+      </div>
+      <div class="edit-grid">
+        <label class="field" style="margin:0"><span>当たり回数</span>
+          <input id="se-hits" inputmode="numeric" value="${s.hits || 0}" /></label>
+        <label class="field" style="margin:0"><span>累計G（初当計算）</span>
+          <input id="se-cumg" inputmode="numeric" value="${s.cumG || 0}" /></label>
+      </div>
+      <label class="field"><span>メモ</span>
+        <textarea id="se-note" rows="2">${esc(s.note || '')}</textarea></label>
+      <div class="mfoot">
+        <button class="btn danger" id="se-del">削除</button>
+        <button class="btn primary" id="se-save">保存</button>
+      </div>
+    `, (root) => {
+      root.querySelector('#se-save').onclick = async () => {
+        s.machine = root.querySelector('#se-machine').value.trim();
+        s.store = root.querySelector('#se-store').value;
+        s.machineNo = root.querySelector('#se-no').value;
+        s.date = root.querySelector('#se-date').value;
+        s.total_spins = parseInt(root.querySelector('#se-total').value || '0', 10) || 0;
+        s.valid_g = parseInt(root.querySelector('#se-validg').value || '0', 10) || 0;
+        s.hits = parseInt(root.querySelector('#se-hits').value || '0', 10) || 0;
+        s.cumG = parseInt(root.querySelector('#se-cumg').value || '0', 10) || 0;
+        s.note = root.querySelector('#se-note').value;
+        s.updatedAt = Date.now();
+        await DB.putSession(s); closeModal(); renderHistory(); toast('保存しました'); syncNow(false);
+      };
+      root.querySelector('#se-del').onclick = async () => {
+        if (!confirm('この記録を削除しますか？')) return;
+        await DB.delSession(s.id); addTombstone('pc_sessions', s.id); closeModal(); renderHistory(); syncNow(false);
+      };
+    });
   }
-  function closeModal() { $modalRoot.innerHTML = ''; }
+
+  /* ---------- モーダル（スタック対応：計算式ビルダーを他モーダルの上に重ねられる） ---------- */
+  function openModal(html, onMount) {
+    const layer = document.createElement('div');
+    layer.className = 'modal-back';
+    layer.innerHTML = `<div class="modal">${html}</div>`;
+    $modalRoot.appendChild(layer);
+    layer.onclick = (e) => { if (e.target === layer) closeModal(); };
+    layer.querySelectorAll('[data-close]').forEach(b => b.onclick = () => closeModal());
+    if (onMount) onMount(layer);
+  }
+  function closeModal() {
+    const layers = $modalRoot.querySelectorAll('.modal-back');
+    if (layers.length) layers[layers.length - 1].remove();
+  }
 
   /* ---------- ルーティング ---------- */
   function render() {

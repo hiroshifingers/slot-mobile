@@ -199,6 +199,35 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .type-btn.sel { background: var(--accent2); border-color: var(--accent); }
 
+/* ---- 総G自動計算（グレーアウト・編集不可） ---- */
+.sh-spins input.auto-ro { color: var(--fg-dim); background: var(--bg2); border-style: dashed; }
+
+/* ---- アコーディオン（機種編集の各セクション） ---- */
+.acc { padding: 0; overflow: hidden; }
+.acc-head {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  background: none; border: none; color: var(--fg); padding: 14px; text-align: left;
+}
+.acc-title { font-size: 14px; font-weight: 700; color: var(--fg); display: flex; align-items: center; gap: 8px; }
+.acc-count {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px;
+  padding: 0 6px; border-radius: 10px; background: var(--bg3); border: 1px solid var(--line);
+  color: var(--fg-dim); font-size: 12px; font-weight: 700;
+}
+.acc-chev { color: var(--fg-dim); transition: transform .18s; }
+.acc.open .acc-chev { transform: rotate(180deg); }
+.acc-body { display: none; padding: 0 14px 14px; }
+.acc.open .acc-body { display: block; }
+.btn.small.block { width: 100%; display: block; }
+
+/* ---- タップで編集する行（契機/カウンター/判別/記録） ---- */
+.tap-row { cursor: pointer; }
+.ed-sort-row.tap-row { background: var(--bg2); border: 1px solid var(--line); padding: 8px 6px 8px 0; }
+.ed-sort-row.tap-row:active { border-color: var(--accent); }
+.tr-main { flex: 1; min-width: 0; }
+.tr-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-sub { font-size: 12px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---- editor 行 ---- */
 .edit-item { background: var(--bg3); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
 .edit-item .eh { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
