@@ -66,8 +66,20 @@
   const groupLabel = (g) => (TRIGGER_GROUPS.find(x => x.value === (g || '')) || { label: 'その他' }).label;
   function triggerLabel(prof, key) {
     if (!key) return '';
-    const t = (prof.hit_triggers || []).find(x => x.key === key);
+    const t = ((prof && prof.hit_triggers) || []).find(x => x.key === key);
     return t ? t.label : key;
+  }
+  // 大当たり履歴の1行（G数・種別・契機チップ・メモ・右端に時間）。実践タブと記録編集で共用
+  function hitRowHtml(prof, h, dataAttr) {
+    const trg = triggerLabel(prof, h.trigger);
+    const memo = [h.extra, h.memo].filter(Boolean).join(' · ');
+    return `<div class="hist-row" ${dataAttr}>
+      <span class="g">${esc(h.g)}G</span>
+      <span class="ty">${esc(h.type)}</span>
+      ${trg ? `<span class="trg-chip">${esc(trg)}</span>` : ''}
+      ${memo ? `<span class="ex">${esc(memo)}</span>` : ''}
+      ${h.savedAt ? `<span class="time">${esc(h.savedAt)}</span>` : ''}
+    </div>`;
   }
 
   /* ---------- 計算式（formula）ヘルパー ---------- */
@@ -321,13 +333,7 @@
     return `
       <div id="rate-cards">${renderRateCards(prof)}</div>
       <button class="btn primary block" id="add-hit" style="margin:12px 0">＋ 履歴登録</button>
-      ${hits ? `<div class="hist-list">${s.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => {
-          const note = [h.savedAt || '', triggerLabel(prof, h.trigger), h.extra, h.memo].filter(Boolean).join(' · ');
-          return `<div class="hist-row" data-edit-hit="${i}">
-            <span class="g">${esc(h.g)}G</span>
-            <span class="ty">${esc(h.type)}</span>
-            ${note ? `<span class="ex">${esc(note)}</span>` : ''}
-          </div>`; }).join('')}</div>`
+      ${hits ? `<div class="hist-list">${s.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => hitRowHtml(prof, h, `data-edit-hit="${i}"`)).join('')}</div>`
         : `<div class="muted small center">まだ登録がありません。打ち始めたら ＋履歴登録 から。</div>`}
     `;
   }
@@ -531,12 +537,20 @@
   }
 
   /* ---------- 履歴登録モーダル ---------- */
+  // 実践中のセッション履歴を編集する薄いラッパー
   function openHitModal(prof, index) {
+    hitEditor({ prof, history: state.active.history, index, onDone: async () => { await saveActive(); renderSession(); } });
+  }
+  // 大当たり履歴の追加/編集モーダル本体（履歴配列を渡して使い回す：実践中／保存済み記録の両方）
+  function hitEditor({ prof, history, index, onDone }) {
+    prof = prof || {};
     const editing = index >= 0;
-    const cur = editing ? state.active.history[index] : { g: '', type: (prof.bonus_types || [])[0] || '', trigger: '', extra: '', memo: '' };
-    const types = prof.bonus_types && prof.bonus_types.length ? prof.bonus_types : ['当たり'];
+    let types = (prof.bonus_types && prof.bonus_types.length) ? prof.bonus_types
+      : [...new Set(history.map(h => h.type).filter(Boolean))];
+    if (!types.length) types = ['当たり'];
     const extras = prof.hit_extra_fields || [];
     const triggers = prof.hit_triggers || [];
+    const cur = editing ? history[index] : { g: '', type: types[0] || '', trigger: '', extra: '', memo: '' };
 
     openModal(`
       <h3>${editing ? '履歴を編集' : '大当たり履歴'}</h3>
@@ -591,15 +605,17 @@
         root.querySelectorAll('[data-extra]').forEach(i => extraVals[i.getAttribute('data-extra')] = i.value);
         const extraStr = extras.map(f => extraVals[f.key] ? `${f.label}:${extraVals[f.key]}` : '').filter(Boolean).join(' ');
         const memo = (root.querySelector('#hit-memo') || {}).value || '';
-        const trig = (prof.hit_triggers || []).find(t => t.key === selTrigger);
+        const trig = triggers.find(t => t.key === selTrigger);
         const now = new Date();
-        const savedAt = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+        // 編集時は元の記録時刻を保持（後から直しても打った時間がずれない）
+        const savedAt = (editing && cur.savedAt) ? cur.savedAt
+          : now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
         const rec = { g, type: selType, trigger: selTrigger, triggerGroup: trig ? (trig.group || '') : '', extra: extraStr, extraVals, memo, savedAt };
-        if (editing) state.active.history[index] = rec; else state.active.history.push(rec);
-        await saveActive(); closeModal(); renderSession();
+        if (editing) history[index] = rec; else history.push(rec);
+        closeModal(); await onDone();
       };
       if (editing) root.querySelector('#hit-del').onclick = async () => {
-        state.active.history.splice(index, 1); await saveActive(); closeModal(); renderSession();
+        history.splice(index, 1); closeModal(); await onDone();
       };
     });
   }
@@ -1244,53 +1260,120 @@
     };
   }
 
-  /* ---------- 保存済み記録：編集モーダル（全項目編集可） ---------- */
+  /* ---------- 保存済み記録：編集モーダル（全項目 閲覧・編集可） ---------- */
   function openSessionEditModal(s) {
-    let date = s.date || '';
-    if (!date) { const d = new Date(s.startedAt); date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-    openModal(`
+    // 作業用ディープコピー。保存を押すまで元データには触れない（履歴を編集しても他の入力欄が消えない）
+    const w = JSON.parse(JSON.stringify(s));
+    if (!Array.isArray(w.history)) w.history = [];
+    if (!w.counts || typeof w.counts !== 'object') w.counts = {};
+    const prof = state.profiles.find(p => p.id === w.profileId) || null;
+
+    // 履歴があれば当たり回数・累計Gは履歴から自動計算（手入力と食い違わないように）
+    const hasHist = () => w.history.length > 0;
+    const recalc = () => {
+      if (hasHist()) {
+        w.hits = w.history.length;
+        w.cumG = w.history.reduce((a, h) => a + (Number(h.g) || 0), 0);
+      }
+    };
+    recalc();
+
+    let date = w.date || '';
+    if (!date) { const d = new Date(w.startedAt); date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+
+    const bodyHtml = () => {
+      const counters = (prof && prof.counters) ? prof.counters : [];
+      const ro = hasHist() ? 'readonly class="auto-ro"' : 'inputmode="numeric"';
+      return `
       <h3>記録を編集</h3>
       <label class="field"><span>機種名</span>
-        <input id="se-machine" value="${esc(s.machine || '')}" /></label>
+        <input id="se-machine" value="${esc(w.machine || '')}" /></label>
       <div class="edit-grid">
         <label class="field" style="margin:0"><span>店舗</span>
-          <input id="se-store" value="${esc(s.store || '')}" placeholder="店名" /></label>
+          <input id="se-store" value="${esc(w.store || '')}" placeholder="店名" /></label>
         <label class="field" style="margin:0"><span>台番</span>
-          <input id="se-no" inputmode="numeric" value="${esc(s.machineNo || '')}" placeholder="台番号" /></label>
+          <input id="se-no" inputmode="numeric" value="${esc(w.machineNo || '')}" placeholder="台番号" /></label>
       </div>
       <label class="field"><span>日付</span>
         <input id="se-date" type="date" value="${esc(date)}" /></label>
       <div class="edit-grid">
         <label class="field" style="margin:0"><span>総G</span>
-          <input id="se-total" inputmode="numeric" value="${s.total_spins || 0}" /></label>
-        <label class="field" style="margin:0"><span>有効G数</span>
-          <input id="se-validg" inputmode="numeric" value="${s.valid_g || 0}" /></label>
+          <input id="se-total" inputmode="numeric" value="${w.total_spins || 0}" /></label>
+        <label class="field" style="margin:0"><span>スタートG</span>
+          <input id="se-start" inputmode="numeric" value="${w.start_spins || 0}" /></label>
       </div>
       <div class="edit-grid">
-        <label class="field" style="margin:0"><span>当たり回数</span>
-          <input id="se-hits" inputmode="numeric" value="${s.hits || 0}" /></label>
-        <label class="field" style="margin:0"><span>累計G（初当計算）</span>
-          <input id="se-cumg" inputmode="numeric" value="${s.cumG || 0}" /></label>
+        <label class="field" style="margin:0"><span>有効G数</span>
+          <input id="se-validg" inputmode="numeric" value="${w.valid_g || 0}" /></label>
+        <label class="field" style="margin:0"><span>当たり回数${hasHist() ? '（自動）' : ''}</span>
+          <input id="se-hits" value="${w.hits || 0}" ${ro} /></label>
       </div>
+      <label class="field"><span>累計G（初当計算）${hasHist() ? '（自動）' : ''}</span>
+        <input id="se-cumg" value="${w.cumG || 0}" ${ro} /></label>
       <label class="field"><span>メモ</span>
-        <textarea id="se-note" rows="2">${esc(s.note || '')}</textarea></label>
+        <textarea id="se-note" rows="2">${esc(w.note || '')}</textarea></label>
+
+      <div class="se-sec">
+        <div class="se-sec-h">大当たり履歴 <span class="acc-count">${w.history.length}</span></div>
+        <button class="btn small block" id="se-add-hit">＋ 履歴を追加</button>
+        ${w.history.length
+          ? `<div class="hist-list" style="margin-top:8px">${w.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => hitRowHtml(prof, h, `data-se-hit="${i}"`)).join('')}</div>`
+          : '<div class="muted small" style="margin-top:6px">まだ登録がありません。</div>'}
+      </div>
+
+      ${counters.length ? `
+      <div class="se-sec">
+        <div class="se-sec-h">カウント</div>
+        <div class="edit-grid">
+          ${counters.map(c => `<label class="field" style="margin:0"><span>${esc(c.label)}</span>
+            <input data-se-cnt="${esc(c.key)}" inputmode="numeric" value="${w.counts[c.key] || 0}" /></label>`).join('')}
+        </div>
+      </div>` : ''}
+
       <div class="mfoot">
         <button class="btn danger" id="se-del">削除</button>
         <button class="btn primary" id="se-save">保存</button>
-      </div>
-    `, (root) => {
+      </div>`;
+    };
+
+    // 入力欄の現在値を作業コピーへ取り込む（再描画で失わないため）
+    const syncFields = (root) => {
+      const v = (id) => (root.querySelector('#' + id) || {}).value;
+      w.machine = (v('se-machine') || '').trim();
+      w.store = v('se-store') || '';
+      w.machineNo = v('se-no') || '';
+      w.date = v('se-date') || '';
+      w.total_spins = parseInt(v('se-total') || '0', 10) || 0;
+      w.start_spins = parseInt(v('se-start') || '0', 10) || 0;
+      w.valid_g = parseInt(v('se-validg') || '0', 10) || 0;
+      w.note = v('se-note') || '';
+      if (!hasHist()) {
+        w.hits = parseInt(v('se-hits') || '0', 10) || 0;
+        w.cumG = parseInt(v('se-cumg') || '0', 10) || 0;
+      }
+      root.querySelectorAll('[data-se-cnt]').forEach(inp => {
+        w.counts[inp.getAttribute('data-se-cnt')] = parseInt(inp.value || '0', 10) || 0;
+      });
+    };
+
+    openModal(bodyHtml(), function bind(root) {
+      const modal = root.querySelector('.modal');
+      const rerender = () => { recalc(); modal.innerHTML = bodyHtml(); bind(root); };
+
+      root.querySelector('#se-add-hit').onclick = () => {
+        syncFields(root);
+        hitEditor({ prof, history: w.history, index: -1, onDone: rerender });
+      };
+      root.querySelectorAll('[data-se-hit]').forEach(rowEl => rowEl.onclick = () => {
+        syncFields(root);
+        hitEditor({ prof, history: w.history, index: parseInt(rowEl.getAttribute('data-se-hit'), 10), onDone: rerender });
+      });
+
       root.querySelector('#se-save').onclick = async () => {
-        s.machine = root.querySelector('#se-machine').value.trim();
-        s.store = root.querySelector('#se-store').value;
-        s.machineNo = root.querySelector('#se-no').value;
-        s.date = root.querySelector('#se-date').value;
-        s.total_spins = parseInt(root.querySelector('#se-total').value || '0', 10) || 0;
-        s.valid_g = parseInt(root.querySelector('#se-validg').value || '0', 10) || 0;
-        s.hits = parseInt(root.querySelector('#se-hits').value || '0', 10) || 0;
-        s.cumG = parseInt(root.querySelector('#se-cumg').value || '0', 10) || 0;
-        s.note = root.querySelector('#se-note').value;
-        s.updatedAt = Date.now();
-        await DB.putSession(s); closeModal(); renderHistory(); toast('保存しました'); syncNow(false);
+        syncFields(root); recalc();
+        w.updatedAt = Date.now();
+        Object.assign(s, w);
+        await DB.putSession(w); closeModal(); renderHistory(); toast('保存しました'); syncNow(false);
       };
       root.querySelector('#se-del').onclick = async () => {
         if (!confirm('この記録を削除しますか？')) return;
