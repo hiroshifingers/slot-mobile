@@ -233,7 +233,7 @@
     return {
       id: uid('s'), profileId: profile.id, machine: profile.machine,
       startedAt: Date.now(), total_spins: 0, start_spins: 0, valid_g: 0,
-      counts: {}, history: [], note: '',
+      counts: {}, history: [], note: '', invest: 0,
       store: '', date: todayStr(), machineNo: ''
     };
   }
@@ -369,8 +369,16 @@
   function renderHitsTab(prof) {
     const s = state.active;
     const hits = s.history.length;
+    const invest = Number(s.invest) || 0;
     return `
       <div id="rate-cards">${renderRateCards(prof)}</div>
+      <div class="invest-row">
+        <span class="ir-label">投資</span>
+        <input id="invest-k" inputmode="decimal" value="${invest ? invest / 1000 : ''}" placeholder="0" />
+        <span class="ir-unit">k</span>
+        <button class="btn" id="invest-plus">＋1k</button>
+        <span class="ir-yen" id="invest-yen">${yen(invest)}円</span>
+      </div>
       <button class="btn primary block" id="add-hit" style="margin:12px 0">＋ 履歴登録</button>
       ${hits ? `<div class="hist-list">${s.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => hitRowHtml(prof, h, `data-edit-hit="${i}"`)).join('')}</div>`
         : `<div class="muted small center">まだ登録がありません。打ち始めたら ＋履歴登録 から。</div>`}
@@ -508,6 +516,12 @@
         saveActive(); refreshHeaderBest(prof);
       });
     });
+    // 投資額（k単位・1=1,000円。＋ボタンは1タップ+1,000円）
+    const investYen = () => { const y = document.getElementById('invest-yen'); if (y) y.textContent = yen(Number(s.invest) || 0) + '円'; };
+    const ik = document.getElementById('invest-k');
+    if (ik) ik.oninput = () => { const v = parseFloat(ik.value || '0'); s.invest = Math.max(0, Math.round((isFinite(v) ? v : 0) * 1000)); investYen(); saveActive(); };
+    const ip = document.getElementById('invest-plus');
+    if (ip) ip.onclick = () => { s.invest = (Number(s.invest) || 0) + 1000; if (ik) ik.value = s.invest / 1000; investYen(); saveActive(); };
     // 履歴
     const addHit = document.getElementById('add-hit');
     if (addHit) addHit.onclick = () => openHitModal(prof, -1);
@@ -1412,11 +1426,13 @@
           <input id="se-start" inputmode="numeric" value="${w.start_spins || 0}" /></label>
       </div>
       <div class="edit-grid">
+        <label class="field" style="margin:0"><span>投資金額（円）</span>
+          <input id="se-invest" inputmode="numeric" value="${w.invest || 0}" /></label>
         <label class="field" style="margin:0"><span>有効G数</span>
           <input id="se-validg" inputmode="numeric" value="${w.valid_g || 0}" /></label>
-        <label class="field" style="margin:0"><span>当たり回数${hasHist() ? '（自動）' : ''}</span>
-          <input id="se-hits" value="${w.hits || 0}" ${ro} /></label>
       </div>
+      <label class="field"><span>当たり回数${hasHist() ? '（自動）' : ''}</span>
+        <input id="se-hits" value="${w.hits || 0}" ${ro} /></label>
       <label class="field"><span>累計G（初当計算）${hasHist() ? '（自動）' : ''}</span>
         <input id="se-cumg" value="${w.cumG || 0}" ${ro} /></label>
       <label class="field"><span>メモ</span>
@@ -1455,6 +1471,7 @@
       w.total_spins = parseInt(v('se-total') || '0', 10) || 0;
       w.start_spins = parseInt(v('se-start') || '0', 10) || 0;
       w.valid_g = parseInt(v('se-validg') || '0', 10) || 0;
+      w.invest = parseInt(v('se-invest') || '0', 10) || 0;
       w.note = v('se-note') || '';
       if (!hasHist()) {
         w.hits = parseInt(v('se-hits') || '0', 10) || 0;
@@ -1513,12 +1530,13 @@
   function computeDay(g) {
     const rec = state.days.find(d => d.id === g.id) || null;
     const autoMedals = g.sessions.reduce((a, s) => a + sessionMedals(s), 0);
+    const autoInvest = g.sessions.reduce((a, s) => a + (Number(s.invest) || 0), 0);
     const rate = rec && Number(rec.rate) > 0 ? Number(rec.rate) : storeRate(g.store);
     const payoutMedals = rec && rec.payoutMedals != null ? Number(rec.payoutMedals) : autoMedals;
-    const invest = rec ? (Number(rec.invest) || 0) : 0;
+    const invest = rec && rec.invest != null ? Number(rec.invest) : autoInvest;
     const payout = rec && rec.payout != null ? Number(rec.payout) : Math.round(payoutMedals * rate);
     const event = rec ? (rec.event || '') : '';
-    return { ...g, rec, autoMedals, rate, payoutMedals, invest, payout, event, profit: payout - invest };
+    return { ...g, rec, autoMedals, autoInvest, rate, payoutMedals, invest, payout, event, profit: payout - invest };
   }
 
   async function renderPL() {
@@ -1579,6 +1597,7 @@
         <label class="field" style="margin:0"><span>イベント</span>
           <input id="d-event" value="${esc(w.event || '')}" placeholder="旧イベ・7の日など" /></label>
       </div>
+      <div class="muted small" style="margin:-4px 0 8px">投資（自動）= 各台の投資合計 ${yen(c.autoInvest)}円。手で調整できます。</div>
 
       <div class="card" style="margin-top:10px">
         <div class="se-sec-h">出玉から回収を計算</div>

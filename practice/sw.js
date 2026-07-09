@@ -1,15 +1,15 @@
 /* Service Worker: アプリシェルをキャッシュしオフライン動作させる */
-const CACHE = 'practice-counter-v18';
+const CACHE = 'practice-counter-v19';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
   './icon.svg',
-  './css/app.css?v=18',
-  './js/db.js?v=18',
-  './js/engine.js?v=18',
-  './js/cloud.js?v=18',
-  './js/app.js?v=18',
+  './css/app.css?v=19',
+  './js/db.js?v=19',
+  './js/engine.js?v=19',
+  './js/cloud.js?v=19',
+  './js/app.js?v=19',
 ];
 
 self.addEventListener('install', (e) => {
