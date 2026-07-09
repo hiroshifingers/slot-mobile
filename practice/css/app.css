@@ -358,3 +358,47 @@ input.auto-ro { color: var(--fg-dim); background: var(--bg2); border-style: dash
 .trg-group { margin-top: 8px; }
 .trg-glabel { font-size: 12px; color: var(--muted); margin: 0 0 4px 2px; }
 .trg-gsel { flex: none; max-width: 38%; }
+
+/* ===== 出玉（履歴行）＋ 出玉推移スランプグラフ ===== */
+.hist-row .md {
+  background: var(--bg); border-radius: 6px; padding: 2px 8px; font-size: 13px;
+  font-weight: 700; color: var(--good); white-space: nowrap;
+}
+.hist-row .ex.plus { color: var(--good); }
+.hist-row .ex.minus { color: var(--bad); }
+
+.slump-wrap { }
+.slump-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+.slump-end { font-weight: 800; font-size: 15px; }
+.slump-end.plus, .slump-line.plus { color: var(--good); }
+.slump-end.minus, .slump-line.minus { color: var(--bad); }
+.slump-svg { width: 100%; height: 140px; display: block; }
+.slump-line { stroke: currentColor; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.slump-zero { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.slump-foot { margin-top: 6px; }
+
+/* ===== 収支タブ ===== */
+.pl-total {
+  background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; font-size: 19px; font-weight: 800; margin-bottom: 12px;
+  display: flex; align-items: baseline; gap: 8px;
+}
+.pl-total .muted { font-weight: 400; }
+.pl-total.plus { color: var(--good); }
+.pl-total.minus { color: var(--bad); }
+.pl-profit { font-weight: 800; font-size: 15px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pl-profit.plus { color: var(--good); }
+.pl-profit.minus { color: var(--bad); }
+.pl-result {
+  margin-top: 10px; border-radius: 10px; padding: 12px 14px; font-size: 18px; font-weight: 800;
+  text-align: center; background: var(--bg3);
+}
+.pl-result.plus { color: var(--good); }
+.pl-result.minus { color: var(--bad); }
+.rate-disp {
+  width: 100%; background: var(--bg2); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 9px; padding: 11px 12px; font-size: 16px; font-weight: 700;
+}
+.sm-row { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+.sm-row:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.sm-row .btn.small { margin-top: 4px; }

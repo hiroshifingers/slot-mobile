@@ -73,9 +73,11 @@
   function hitRowHtml(prof, h, dataAttr) {
     const trg = triggerLabel(prof, h.trigger);
     const memo = [h.extra, h.memo].filter(Boolean).join(' · ');
+    const medals = Number(h.medals) || 0;
     return `<div class="hist-row" ${dataAttr}>
       <span class="g">${esc(h.g)}G</span>
       <span class="ty">${esc(h.type)}</span>
+      ${medals ? `<span class="md">+${medals}枚</span>` : ''}
       ${trg ? `<span class="trg-chip">${esc(trg)}</span>` : ''}
       ${memo ? `<span class="ex">${esc(memo)}</span>` : ''}
       ${h.savedAt ? `<span class="time">${esc(h.savedAt)}</span>` : ''}
@@ -150,7 +152,7 @@
   const emptySession = () => ({ total_spins: 0, start_spins: 0, valid_g: 0, counts: {}, history: [] });
 
   // tab: アプリ階層（session/profiles/edit/history）, sessionTab: セッション内タブ（pageId | 'hits' | 'judge' | 'settings'）
-  let state = { tab: 'session', sessionTab: null, profiles: [], active: null, editing: null };
+  let state = { tab: 'session', sessionTab: null, profiles: [], active: null, editing: null, stores: [], days: [] };
   // 機種編集：開いているアコーディオン（再描画をまたいで開閉状態を保持）
   let openAccs = new Set();
 
@@ -170,6 +172,43 @@
   const autoTotalG = (s) => (s.history || []).reduce((a, h) => a + (Number(h.g) || 0), 0);
   function applyAutoTotal(prof, s) {
     if (prof && prof.totalGMode === 'auto' && s) { s.total_spins = autoTotalG(s); s.start_spins = 0; }
+  }
+  // セッション（1台）の総出玉＝大当たり履歴の出玉合計
+  const sessionMedals = (s) => (s && s.history || []).reduce((a, h) => a + (Number(h.medals) || 0), 0);
+  const MEDALS_PER_G = 3; // 1回転=3枚（差枚計算用）
+
+  /* 出玉推移（差枚スランプ）SVG。history は時系列（push順）。
+     区間差枚 = 出玉 − 回転数×3枚 を累積した折れ線。ライブラリ非依存。 */
+  function slumpSvg(history) {
+    const hits = (history || []).filter(h => (Number(h.g) || 0) > 0 || (Number(h.medals) || 0) > 0);
+    if (hits.length < 1) {
+      return `<div class="muted small center" style="padding:16px 0">出玉と回転数を入れると推移グラフが出ます。</div>`;
+    }
+    // 累積差枚の系列（起点0）
+    const pts = [0];
+    let cum = 0;
+    hits.forEach(h => { cum += (Number(h.medals) || 0) - (Number(h.g) || 0) * MEDALS_PER_G; pts.push(cum); });
+    const W = 320, H = 140, PL = 6, PR = 6, PT = 10, PB = 10;
+    const min = Math.min(0, ...pts), max = Math.max(0, ...pts);
+    const span = (max - min) || 1;
+    const x = (i) => PL + (pts.length === 1 ? 0 : i * (W - PL - PR) / (pts.length - 1));
+    const y = (v) => PT + (max - v) * (H - PT - PB) / span;
+    const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+    const zeroY = y(0).toFixed(1);
+    const end = pts[pts.length - 1];
+    const cls = end >= 0 ? 'plus' : 'minus';
+    return `
+      <div class="slump-wrap">
+        <div class="slump-head">
+          <span class="muted small">出玉推移（差枚）</span>
+          <span class="slump-end ${cls}">${end >= 0 ? '+' : ''}${end}枚</span>
+        </div>
+        <svg viewBox="0 0 ${W} ${H}" class="slump-svg" preserveAspectRatio="none">
+          <line x1="${PL}" y1="${zeroY}" x2="${W - PR}" y2="${zeroY}" class="slump-zero" />
+          <polyline points="${line}" class="slump-line ${cls}" fill="none" />
+        </svg>
+        <div class="slump-foot muted small">当たり${hits.length}回・最終差枚 ${end >= 0 ? '+' : ''}${end}枚（1回転=3枚換算）</div>
+      </div>`;
   }
 
   // 旧データ/新規プロファイルに pages を保証し、counterのpageId補完
@@ -335,6 +374,7 @@
       <button class="btn primary block" id="add-hit" style="margin:12px 0">＋ 履歴登録</button>
       ${hits ? `<div class="hist-list">${s.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => hitRowHtml(prof, h, `data-edit-hit="${i}"`)).join('')}</div>`
         : `<div class="muted small center">まだ登録がありません。打ち始めたら ＋履歴登録 から。</div>`}
+      <div class="card" style="margin-top:12px">${slumpSvg(s.history)}</div>
     `;
   }
 
@@ -550,13 +590,17 @@
     if (!types.length) types = ['当たり'];
     const extras = prof.hit_extra_fields || [];
     const triggers = prof.hit_triggers || [];
-    const cur = editing ? history[index] : { g: '', type: types[0] || '', trigger: '', extra: '', memo: '' };
+    const cur = editing ? history[index] : { g: '', medals: '', type: types[0] || '', trigger: '', extra: '', memo: '' };
 
     openModal(`
       <h3>${editing ? '履歴を編集' : '大当たり履歴'}</h3>
       <label class="field">
         <span>G数（スタート＝前回からの回転数）</span>
         <input id="hit-g" inputmode="numeric" value="${esc(cur.g)}" placeholder="例 280" style="font-size:22px;font-weight:800" />
+      </label>
+      <label class="field">
+        <span>出玉（枚）</span>
+        <input id="hit-medals" inputmode="numeric" value="${esc(cur.medals == null ? '' : cur.medals)}" placeholder="例 520" style="font-size:22px;font-weight:800" />
       </label>
       <label class="field"><span>種別</span></label>
       <div class="type-grid" id="hit-types">
@@ -600,6 +644,8 @@
       });
       root.querySelector('#hit-save').onclick = async () => {
         const g = parseInt(gEl.value || '0', 10) || 0;
+        const medalsEl = root.querySelector('#hit-medals');
+        const medals = parseInt((medalsEl && medalsEl.value) || '0', 10) || 0;
         if (!selType) { toast('種別を選んでください'); return; }
         const extraVals = {};
         root.querySelectorAll('[data-extra]').forEach(i => extraVals[i.getAttribute('data-extra')] = i.value);
@@ -610,7 +656,7 @@
         // 編集時は元の記録時刻を保持（後から直しても打った時間がずれない）
         const savedAt = (editing && cur.savedAt) ? cur.savedAt
           : now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-        const rec = { g, type: selType, trigger: selTrigger, triggerGroup: trig ? (trig.group || '') : '', extra: extraStr, extraVals, memo, savedAt };
+        const rec = { g, medals, type: selType, trigger: selTrigger, triggerGroup: trig ? (trig.group || '') : '', extra: extraStr, extraVals, memo, savedAt };
         if (editing) history[index] = rec; else history.push(rec);
         closeModal(); await onDone();
       };
@@ -1168,7 +1214,9 @@
   const SYNC = {
     profTime: (p) => p.updatedAt || p.createdAt || 0,
     sessTime: (s) => s.updatedAt || s.closedAt || s.startedAt || 0,
-    TOMB: 'pc_tombstones', // [{table:'pc_profiles'|'pc_sessions', id, at}]
+    storeTime: (s) => s.updatedAt || s.createdAt || 0,
+    dayTime: (d) => d.updatedAt || d.createdAt || 0,
+    TOMB: 'pc_tombstones', // [{table:'pc_profiles'|'pc_sessions'|'pc_stores'|'pc_days', id, at}]
     busy: false,
     lastMsg: '',
   };
@@ -1222,8 +1270,37 @@
         const rows = tombs.filter(t => t.table === grp).map(t => ({ id: t.id, data: {}, updated_at: t.at, deleted: true }));
         await Cloud.upsert(grp, rows);
       }
+      clearTombstones(tombs.filter(t => t.table === 'pc_profiles' || t.table === 'pc_sessions'));
 
-      clearTombstones(tombs);
+      // --- 追加テーブル（店舗マスタ・収支）。マイグレ未実行(テーブル無し)でも本体同期は壊さない ---
+      try {
+        const extra = [
+          { table: 'pc_stores', get: DB.getStores, putRaw: DB.putStoreRaw, del: DB.delStore, time: SYNC.storeTime },
+          { table: 'pc_days',   get: DB.getDays,   putRaw: DB.putDayRaw,   del: DB.delDay,   time: SYNC.dayTime },
+        ];
+        const etombs = getTombstones();
+        for (const t of extra) {
+          const cloudRows = await Cloud.selectAll(t.table);
+          const cloudMap = new Map(cloudRows.map(r => [r.id, r]));
+          const localMap = new Map((await t.get()).map(x => [x.id, x]));
+          for (const row of cloudRows) {
+            const cur = localMap.get(row.id);
+            if (row.deleted) { if (cur) { await t.del(row.id); changed++; } }
+            else if (!cur || row.updated_at > t.time(cur)) { await t.putRaw(row.data); changed++; }
+          }
+          const push = (await t.get())
+            .filter(x => { const c = cloudMap.get(x.id); return !c || t.time(x) > c.updated_at; })
+            .map(x => ({ id: x.id, data: x, updated_at: t.time(x), deleted: false }));
+          await Cloud.upsert(t.table, push);
+          const delRows = etombs.filter(z => z.table === t.table).map(z => ({ id: z.id, data: {}, updated_at: z.at, deleted: true }));
+          await Cloud.upsert(t.table, delRows);
+        }
+        clearTombstones(etombs.filter(z => z.table === 'pc_stores' || z.table === 'pc_days'));
+      } catch (e) {
+        // pc_stores/pc_days が未作成（Supabase側マイグレ前）等。本体同期は成功のまま維持。
+        console.warn('収支/店舗テーブルの同期をスキップ:', String(e && e.message || e));
+      }
+
       await reload();
       SYNC.lastMsg = changed ? `同期しました（更新 ${changed} 件）` : '同期しました（最新）';
       if (manual) { toast(SYNC.lastMsg); render(); }
@@ -1405,11 +1482,239 @@
         syncFields(root); recalc();
         w.updatedAt = Date.now();
         Object.assign(s, w);
-        await DB.putSession(w); closeModal(); renderHistory(); toast('保存しました'); syncNow(false);
+        await DB.putSession(w); closeModal(); render(); toast('保存しました'); syncNow(false);
       };
       root.querySelector('#se-del').onclick = async () => {
         if (!confirm('この記録を削除しますか？')) return;
-        await DB.delSession(s.id); addTombstone('pc_sessions', s.id); closeModal(); renderHistory(); syncNow(false);
+        await DB.delSession(s.id); addTombstone('pc_sessions', s.id); closeModal(); render(); syncNow(false);
+      };
+    });
+  }
+
+  /* ============================================================
+     画面: 収支（1日単位 = 日付＋店舗で1件）
+     ・1日の出玉数 = その日その店の全セッションの出玉合計（自動・手動調整可）
+     ・回収金額 = 出玉 × 換金率(店舗マスタ・円/枚)。[計算]で反映・編集可
+     ・収支 = 回収 − 投資
+     ・台別成績は各セッション（記録）をそのまま参照
+  ============================================================ */
+  const DEFAULT_RATE = 20; // 円/枚（等価）
+  const findStore = (name) => state.stores.find(s => (s.name || '') === (name || ''));
+  const storeRate = (name) => { const s = findStore(name); return s && Number(s.rate) > 0 ? Number(s.rate) : DEFAULT_RATE; };
+  const yen = (n) => (Number(n) || 0).toLocaleString('ja-JP');
+  // 日付＋店舗から決定的なdayId（端末間で同じキー＝同期で重複しない）
+  function keyHash(str) { let h = 0; for (let i = 0; i < (str || '').length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0; } return (h >>> 0).toString(36); }
+  const dayId = (date, store) => `d_${date}_${keyHash(store || '')}`;
+  const sessDate = (s) => { if (s.date) return s.date; const d = new Date(s.startedAt); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+  // セッション1台の差枚（＝出玉 − 総回転×3枚）
+  const sessionDiff = (s) => sessionMedals(s) - (Number(s.total_spins) || 0) * MEDALS_PER_G;
+
+  // (date, store) グループの表示値を算出（day記録があれば上書き、なければ自動）
+  function computeDay(g) {
+    const rec = state.days.find(d => d.id === g.id) || null;
+    const autoMedals = g.sessions.reduce((a, s) => a + sessionMedals(s), 0);
+    const rate = rec && Number(rec.rate) > 0 ? Number(rec.rate) : storeRate(g.store);
+    const payoutMedals = rec && rec.payoutMedals != null ? Number(rec.payoutMedals) : autoMedals;
+    const invest = rec ? (Number(rec.invest) || 0) : 0;
+    const payout = rec && rec.payout != null ? Number(rec.payout) : Math.round(payoutMedals * rate);
+    const event = rec ? (rec.event || '') : '';
+    return { ...g, rec, autoMedals, rate, payoutMedals, invest, payout, event, profit: payout - invest };
+  }
+
+  async function renderPL() {
+    const sessions = await DB.getSessions();
+    const groups = new Map();
+    sessions.forEach(s => {
+      const date = sessDate(s), store = s.store || '';
+      const id = dayId(date, store);
+      if (!groups.has(id)) groups.set(id, { id, date, store, sessions: [] });
+      groups.get(id).sessions.push(s);
+    });
+    // セッションが無い（手動作成の）収支記録も拾う
+    state.days.forEach(d => { if (!groups.has(d.id)) groups.set(d.id, { id: d.id, date: d.date || '', store: d.store || '', sessions: [] }); });
+    const rows = [...groups.values()].map(computeDay).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.store || '').localeCompare(a.store || ''));
+    const totalProfit = rows.reduce((a, r) => a + r.profit, 0);
+
+    $app.innerHTML = `
+      <div class="screen-head">
+        <h1>収支</h1>
+        <button class="btn" id="store-master" style="margin-left:auto">⚙ 店舗マスタ</button>
+      </div>
+      ${rows.length ? `<div class="pl-total ${totalProfit >= 0 ? 'plus' : 'minus'}">通算 ${totalProfit >= 0 ? '+' : ''}${yen(totalProfit)}円<span class="muted small">（${rows.length}日）</span></div>` : ''}
+      ${rows.length ? rows.map(r => `
+        <div class="list-item tap-row" data-day="${r.id}">
+          <span class="ti">💰</span>
+          <div class="body">
+            <div class="t">${esc(r.date || '日付なし')}${r.store ? '・' + esc(r.store) : '・店舗未設定'}</div>
+            <div class="sub">${r.event ? esc(r.event) + '・' : ''}台${r.sessions.length}・投資${yen(r.invest)}・回収${yen(r.payout)}</div>
+          </div>
+          <span class="pl-profit ${r.profit >= 0 ? 'plus' : 'minus'}">${r.profit >= 0 ? '+' : ''}${yen(r.profit)}</span>
+        </div>`).join('')
+        : `<div class="empty"><div class="big">💰</div><p>収支がここに並びます。<br>実践で店舗・日付・出玉を登録すると<br>1日ごとに自動でまとまります。</p></div>`}
+    `;
+    document.getElementById('store-master').onclick = openStoreMaster;
+    document.querySelectorAll('[data-day]').forEach(row => row.onclick = () => {
+      const g = groups.get(row.getAttribute('data-day'));
+      if (g) openDayModal(g);
+    });
+  }
+
+  /* ---------- 収支の詳細・編集モーダル ---------- */
+  function openDayModal(group) {
+    const c = computeDay(group);
+    // 作業コピー（保存を押すまで確定しない）
+    const w = {
+      id: c.id, date: c.date, store: c.store, event: c.event,
+      invest: c.invest, payoutMedals: c.payoutMedals, payout: c.payout, rate: c.rate,
+    };
+    const inMaster = !!findStore(c.store);
+
+    const body = () => `
+      <h3>収支（${esc(w.date || '日付なし')}${w.store ? '・' + esc(w.store) : ''}）</h3>
+      <div class="muted small" style="margin-bottom:8px">日付・店舗は各台の記録から自動で束ねています（変更は記録タブから）。</div>
+
+      <div class="edit-grid">
+        <label class="field" style="margin:0"><span>投資金額（円）</span>
+          <input id="d-invest" inputmode="numeric" value="${w.invest || ''}" placeholder="0" /></label>
+        <label class="field" style="margin:0"><span>イベント</span>
+          <input id="d-event" value="${esc(w.event || '')}" placeholder="旧イベ・7の日など" /></label>
+      </div>
+
+      <div class="card" style="margin-top:10px">
+        <div class="se-sec-h">出玉から回収を計算</div>
+        <div class="muted small">1日の出玉（自動）= ${yen(c.autoMedals)}枚。手で調整できます。</div>
+        <div class="edit-grid" style="margin-top:6px">
+          <label class="field" style="margin:0"><span>出玉（枚）</span>
+            <input id="d-medals" inputmode="numeric" value="${w.payoutMedals || ''}" placeholder="0" /></label>
+          <div class="field" style="margin:0"><span>換金率</span>
+            <div class="rate-disp">${w.rate}円/枚 ${inMaster ? '' : '<span class="muted small">(既定)</span>'}</div></div>
+        </div>
+        <button class="btn small block" id="d-calc" style="margin-top:8px">🖩 出玉 × 換金率 で回収を計算</button>
+        ${inMaster ? '' : `<div class="muted small" style="margin-top:6px">この店舗は店舗マスタ未登録です（換金率${DEFAULT_RATE}円/枚で計算）。⚙店舗マスタで登録できます。</div>`}
+      </div>
+
+      <label class="field" style="margin-top:10px"><span>回収金額（円・編集可）</span>
+        <input id="d-payout" inputmode="numeric" value="${w.payout || ''}" placeholder="0" style="font-size:20px;font-weight:800" /></label>
+
+      <div class="pl-result ${(w.payout - w.invest) >= 0 ? 'plus' : 'minus'}" id="d-profit">
+        収支 ${(w.payout - w.invest) >= 0 ? '+' : ''}${yen(w.payout - w.invest)}円
+      </div>
+
+      <div class="se-sec">
+        <div class="se-sec-h">台別成績 <span class="acc-count">${group.sessions.length}</span></div>
+        ${group.sessions.length ? `<div class="hist-list" style="margin-top:6px">${
+          group.sessions.map(s => {
+            const diff = sessionDiff(s);
+            return `<div class="hist-row tap-row" data-day-sess="${s.id}">
+              <span class="ty">${esc(s.machine || '機種')}</span>
+              ${s.machineNo ? `<span class="trg-chip">台${esc(s.machineNo)}</span>` : ''}
+              <span class="g">${s.total_spins || 0}G</span>
+              <span class="md">${sessionMedals(s)}枚</span>
+              <span class="ex ${diff >= 0 ? 'plus' : 'minus'}">差枚 ${diff >= 0 ? '+' : ''}${diff}</span>
+            </div>`;
+          }).join('')}</div>`
+          : '<div class="muted small" style="margin-top:6px">この日の台記録はありません。</div>'}
+      </div>
+
+      <div class="mfoot">
+        ${c.rec ? '<button class="btn danger" id="d-del">収支を削除</button>' : ''}
+        <button class="btn primary" id="d-save">保存</button>
+      </div>`;
+
+    const sync = (root) => {
+      const v = (id) => (root.querySelector('#' + id) || {}).value;
+      w.invest = parseInt(v('d-invest') || '0', 10) || 0;
+      w.event = v('d-event') || '';
+      w.payoutMedals = parseInt(v('d-medals') || '0', 10) || 0;
+      w.payout = parseInt(v('d-payout') || '0', 10) || 0;
+    };
+    const refreshProfit = (root) => {
+      const el = root.querySelector('#d-profit');
+      const p = (w.payout || 0) - (w.invest || 0);
+      el.className = 'pl-result ' + (p >= 0 ? 'plus' : 'minus');
+      el.textContent = `収支 ${p >= 0 ? '+' : ''}${yen(p)}円`;
+    };
+
+    openModal(body(), function bind(root) {
+      const modal = root.querySelector('.modal');
+      ['d-invest', 'd-payout', 'd-medals'].forEach(id => {
+        const el = root.querySelector('#' + id);
+        if (el) el.oninput = () => { sync(root); refreshProfit(root); };
+      });
+      const ev = root.querySelector('#d-event'); if (ev) ev.oninput = () => { sync(root); };
+      root.querySelector('#d-calc').onclick = () => {
+        sync(root);
+        w.payout = Math.round((w.payoutMedals || 0) * w.rate);
+        const pe = root.querySelector('#d-payout'); if (pe) pe.value = w.payout;
+        refreshProfit(root);
+        toast(`${yen(w.payoutMedals)}枚 × ${w.rate}円 = ${yen(w.payout)}円`);
+      };
+      root.querySelectorAll('[data-day-sess]').forEach(rowEl => rowEl.onclick = async () => {
+        const s = (await DB.getSessions()).find(x => x.id === rowEl.getAttribute('data-day-sess'));
+        if (s) { closeModal(); openSessionEditModal(s); }
+      });
+      root.querySelector('#d-save').onclick = async () => {
+        sync(root);
+        const rec = {
+          id: w.id, date: w.date, store: w.store, event: w.event,
+          invest: w.invest, payoutMedals: w.payoutMedals, payout: w.payout, rate: w.rate,
+          createdAt: (c.rec && c.rec.createdAt) || Date.now(),
+        };
+        await DB.putDay(rec);
+        await reload();
+        closeModal(); renderPL(); toast('収支を保存しました'); syncNow(false);
+      };
+      const del = root.querySelector('#d-del');
+      if (del) del.onclick = async () => {
+        if (!confirm('この日の収支（投資・回収）を削除しますか？台の記録は残ります。')) return;
+        await DB.delDay(w.id); addTombstone('pc_days', w.id); await reload();
+        closeModal(); renderPL(); syncNow(false);
+      };
+    });
+  }
+
+  /* ---------- 店舗マスタ（換金率）編集モーダル ---------- */
+  function openStoreMaster() {
+    const work = state.stores.map(s => ({ ...s }));
+
+    const body = () => `
+      <h3>店舗マスタ（換金率）</h3>
+      <div class="muted small" style="margin-bottom:8px">回収金額 = 出玉(枚) × 換金率(円/枚)。等価は20円/枚。</div>
+      <div id="sm-list">
+        ${work.length ? work.map((s, i) => `
+          <div class="sm-row">
+            <div class="edit-grid">
+              <label class="field" style="margin:0"><span>店舗名</span>
+                <input data-sm-name="${i}" value="${esc(s.name || '')}" placeholder="店名" /></label>
+              <label class="field" style="margin:0"><span>換金率(円/枚)</span>
+                <input data-sm-rate="${i}" inputmode="decimal" value="${esc(s.rate == null ? '' : s.rate)}" placeholder="20" /></label>
+            </div>
+            <button class="btn small danger" data-sm-del="${i}">削除</button>
+          </div>`).join('')
+          : '<div class="muted small">まだ店舗がありません。＋で追加してください。</div>'}
+      </div>
+      <button class="btn small block" id="sm-add" style="margin-top:10px">＋ 店舗を追加</button>
+      <div class="mfoot"><button class="btn primary" id="sm-save">保存</button></div>`;
+
+    const sync = (root) => {
+      root.querySelectorAll('[data-sm-name]').forEach(inp => { work[+inp.getAttribute('data-sm-name')].name = inp.value.trim(); });
+      root.querySelectorAll('[data-sm-rate]').forEach(inp => { const v = parseFloat(inp.value); work[+inp.getAttribute('data-sm-rate')].rate = isFinite(v) && v > 0 ? v : DEFAULT_RATE; });
+    };
+
+    openModal(body(), function bind(root) {
+      const modal = root.querySelector('.modal');
+      const rerender = () => { modal.innerHTML = body(); bind(root); };
+      root.querySelector('#sm-add').onclick = () => { sync(root); work.push({ id: uid('st'), name: '', rate: DEFAULT_RATE, createdAt: Date.now() }); rerender(); };
+      root.querySelectorAll('[data-sm-del]').forEach(b => b.onclick = () => { sync(root); work.splice(+b.getAttribute('data-sm-del'), 1); rerender(); });
+      root.querySelector('#sm-save').onclick = async () => {
+        sync(root);
+        const keep = work.filter(s => s.name); // 名前なしは破棄
+        // 削除された店舗
+        const keepIds = new Set(keep.map(s => s.id));
+        for (const old of state.stores) { if (!keepIds.has(old.id)) { await DB.delStore(old.id); addTombstone('pc_stores', old.id); } }
+        for (const s of keep) await DB.putStore(s);
+        await reload();
+        closeModal(); renderPL(); toast('店舗マスタを保存しました'); syncNow(false);
       };
     });
   }
@@ -1437,9 +1742,14 @@
     else if (state.tab === 'profiles') renderProfiles();
     else if (state.tab === 'edit') renderEditor();
     else if (state.tab === 'history') renderHistory();
+    else if (state.tab === 'pl') renderPL();
   }
 
-  async function reload() { state.profiles = (await DB.getProfiles()).map(ensurePages); }
+  async function reload() {
+    state.profiles = (await DB.getProfiles()).map(ensurePages);
+    state.stores = await DB.getStores().catch(() => []);
+    state.days = await DB.getDays().catch(() => []);
+  }
 
   document.querySelectorAll('#tabbar .tab').forEach(t =>
     t.onclick = () => { state.editing = null; state.tab = t.getAttribute('data-tab'); render(); });
@@ -1472,7 +1782,7 @@
   }
 
   // 同期結果が出たら、今リストを見ている画面だけ再描画する（編集中の画面は割り込まない）
-  const REFRESHABLE_TABS = ['history', 'profiles'];
+  const REFRESHABLE_TABS = ['history', 'profiles', 'pl'];
   function refreshIfChanged(r) {
     if (r && r.ok && r.added && REFRESHABLE_TABS.includes(state.tab)) render();
   }

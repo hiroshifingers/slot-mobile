@@ -23,16 +23,40 @@ create table if not exists pc_sessions (
   deleted    boolean not null default false
 );
 
+-- 店舗マスタ（換金率など）。data に store オブジェクト（{id,name,rate,...}）
+create table if not exists pc_stores (
+  id         text primary key,
+  user_id    uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  data       jsonb not null,
+  updated_at bigint not null,
+  deleted    boolean not null default false
+);
+
+-- 1日の収支（日付＋店舗で1件）。data に day オブジェクト
+create table if not exists pc_days (
+  id         text primary key,
+  user_id    uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  data       jsonb not null,
+  updated_at bigint not null,
+  deleted    boolean not null default false
+);
+
 -- 差分取得を速くする（user_id + updated_at）
 create index if not exists pc_profiles_user_updated on pc_profiles (user_id, updated_at);
 create index if not exists pc_sessions_user_updated on pc_sessions (user_id, updated_at);
+create index if not exists pc_stores_user_updated on pc_stores (user_id, updated_at);
+create index if not exists pc_days_user_updated on pc_days (user_id, updated_at);
 
 -- RLS: ログイン済みユーザーは「自分の行」だけ読み書きできる
 alter table pc_profiles enable row level security;
 alter table pc_sessions enable row level security;
+alter table pc_stores enable row level security;
+alter table pc_days enable row level security;
 
 drop policy if exists own_profiles on pc_profiles;
 drop policy if exists own_sessions on pc_sessions;
+drop policy if exists own_stores on pc_stores;
+drop policy if exists own_days on pc_days;
 
 create policy own_profiles on pc_profiles
   for all to authenticated
@@ -40,6 +64,16 @@ create policy own_profiles on pc_profiles
   with check (auth.uid() = user_id);
 
 create policy own_sessions on pc_sessions
+  for all to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy own_stores on pc_stores
+  for all to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+create policy own_days on pc_days
   for all to authenticated
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);

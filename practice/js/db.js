@@ -2,11 +2,13 @@
  * stores:
  *   profiles : 機種プロファイル（ライブラリ） keyPath=id
  *   sessions : 終了済みセッション（履歴/統計）   keyPath=id
+ *   stores_m : 店舗マスタ（換金率など）          keyPath=id
+ *   days     : 1日の収支（日付＋店舗で1件）        keyPath=id
  *   state    : 現在の進行中セッションなど        keyPath=key  ('active' に1件)
  */
 const DB = (() => {
   const NAME = 'practice_counter';
-  const VERSION = 1;
+  const VERSION = 2; // v2: stores_m（店舗マスタ）/ days（収支）を追加
   let _db = null;
 
   function open() {
@@ -17,6 +19,8 @@ const DB = (() => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains('profiles')) db.createObjectStore('profiles', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('stores_m')) db.createObjectStore('stores_m', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('days'))     db.createObjectStore('days',     { keyPath: 'id' });
         if (!db.objectStoreNames.contains('state'))    db.createObjectStore('state',    { keyPath: 'key' });
       };
       req.onsuccess = () => { _db = req.result; resolve(_db); };
@@ -44,6 +48,18 @@ const DB = (() => {
     async getSessions()      { return reqP((await tx('sessions', 'readonly')).getAll()); },
     async putSession(s)      { return reqP((await tx('sessions', 'readwrite')).put(s)); },
     async delSession(id)     { return reqP((await tx('sessions', 'readwrite')).delete(id)); },
+
+    // --- stores (店舗マスタ：換金率など) ---
+    async getStores()        { return reqP((await tx('stores_m', 'readonly')).getAll()); },
+    async putStore(s)        { s.updatedAt = Date.now(); return reqP((await tx('stores_m', 'readwrite')).put(s)); },
+    async putStoreRaw(s)     { return reqP((await tx('stores_m', 'readwrite')).put(s)); },
+    async delStore(id)       { return reqP((await tx('stores_m', 'readwrite')).delete(id)); },
+
+    // --- days (1日の収支) ---
+    async getDays()          { return reqP((await tx('days', 'readonly')).getAll()); },
+    async putDay(d)          { d.updatedAt = Date.now(); return reqP((await tx('days', 'readwrite')).put(d)); },
+    async putDayRaw(d)       { return reqP((await tx('days', 'readwrite')).put(d)); },
+    async delDay(id)         { return reqP((await tx('days', 'readwrite')).delete(id)); },
 
     // --- active state ---
     async getActive()        { const r = await reqP((await tx('state', 'readonly')).get('active')); return r ? r.value : null; },
