@@ -401,14 +401,6 @@
         <button class="btn" id="invest-plus">＋1k</button>
         <span class="ir-yen" id="invest-yen">${yen(invest)}円</span>
       </div>
-      <div class="invest-row payout-row">
-        <span class="ir-label">回収</span>
-        <input id="payout-medals" inputmode="numeric" value="${s.payoutMedals || ''}" placeholder="0" />
-        <span class="ir-unit">枚</span>
-        <button class="btn" id="payout-calc">計算</button>
-        <input id="payout-yen" inputmode="numeric" value="${s.payout || ''}" placeholder="0" />
-        <span class="ir-unit">円</span>
-      </div>
       <button class="btn primary block" id="add-hit" style="margin:12px 0">＋ 履歴登録</button>
       ${hits ? `<div class="hist-list">${s.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => `
         <div class="hit-item">
@@ -489,7 +481,17 @@
     bindContentEvents(prof);
   }
 
-  /* ---- 設定タブ ---- */
+  // 店舗セレクトの option（店舗マスタから参照。現在値がマスタ未登録なら選択肢に補う）
+  function storeOptionsHtml(current) {
+    const names = state.stores.map(s => s.name).filter(Boolean);
+    const has = new Set(names);
+    let opts = `<option value="">（未選択）</option>`;
+    names.forEach(n => { opts += `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`; });
+    if (current && !has.has(current)) opts += `<option value="${esc(current)}" selected>${esc(current)}（マスタ未登録）</option>`;
+    return opts;
+  }
+
+  /* ---- 実践終了タブ ---- */
   function renderSettingsTab(prof) {
     const s = state.active;
     return `
@@ -497,19 +499,25 @@
         <h2>実践情報</h2>
         <div class="edit-grid">
           <label class="field" style="margin:0"><span>店舗</span>
-            <input id="set-store" value="${esc(s.store || '')}" placeholder="店名" /></label>
+            <select id="set-store">${storeOptionsHtml(s.store || '')}</select></label>
           <label class="field" style="margin:0"><span>台番</span>
             <input id="set-machineno" inputmode="numeric" value="${esc(s.machineNo || '')}" placeholder="台番号" /></label>
         </div>
         <label class="field" style="margin:8px 0 0"><span>日付</span>
           <input id="set-date" type="date" value="${esc(s.date || '')}" /></label>
+        ${state.stores.length ? '' : '<div class="muted small" style="margin-top:6px">店舗マスタが未登録です。「収支 → ⚙店舗マスタ」で登録すると回収計算に使えます。</div>'}
       </div>
       <div class="card">
-        <h2>このセッション</h2>
-        <label class="field"><span>有効G数（任意・分母に使う場合）</span>
-          <input id="set-validg" inputmode="numeric" value="${s.valid_g || ''}" placeholder="0" /></label>
-        <label class="field"><span>メモ</span>
-          <textarea id="set-note" rows="2" placeholder="所感など">${esc(s.note)}</textarea></label>
+        <h2>回収</h2>
+        <div class="invest-row payout-row">
+          <span class="ir-label">回収</span>
+          <input id="payout-medals" inputmode="numeric" value="${s.payoutMedals || ''}" placeholder="0" />
+          <span class="ir-unit">枚</span>
+          <button class="btn" id="payout-calc">計算</button>
+          <input id="payout-yen" inputmode="numeric" value="${s.payout || ''}" placeholder="0" />
+          <span class="ir-unit">円</span>
+        </div>
+        <div class="muted small" style="margin-top:6px">回収金額 = 回収枚数 × 1枚あたり金額（上で選んだ店舗の「交換枚数/1,000円」から算出）。</div>
       </div>
       <div class="card">
         <h2>セッション操作</h2>
@@ -564,12 +572,13 @@
     if (pc) pc.onclick = () => {
       const medals = Number(s.payoutMedals) || 0;
       if (!medals) { toast('回収枚数を入力してください'); return; }
+      if (!s.store || !findStore(s.store)) { toast('店舗を店舗マスタから選択してください'); return; }
       const rate = storeRate(s.store); // 1枚あたりの金額（円/枚）
       s.payout = Math.round(medals * rate);
       if (py) py.value = s.payout;
       saveActive();
-      const inMaster = !!findStore(s.store);
-      toast(`${yen(medals)}枚 × ${rate}円 = ${yen(s.payout)}円${inMaster ? '' : '（既定' + DEFAULT_RATE + '円/枚）'}`);
+      const rateDisp = Math.round(rate * 100) / 100;
+      toast(`${yen(medals)}枚 × ${rateDisp}円 = ${yen(s.payout)}円`);
     };
     // 履歴
     const addHit = document.getElementById('add-hit');
@@ -598,13 +607,9 @@
         const np = state.profiles.find(p => p.id === prof.id);
         refreshJudge(np); refreshHeaderBest(np);
       });
-    // 設定タブ
-    const vg = document.getElementById('set-validg');
-    if (vg) vg.oninput = () => { s.valid_g = parseInt(vg.value || '0', 10) || 0; saveActive(); };
-    const note = document.getElementById('set-note');
-    if (note) note.oninput = () => { s.note = note.value; saveActive(); };
+    // 実践終了タブ
     const st = document.getElementById('set-store');
-    if (st) st.oninput = () => { s.store = st.value; saveActive(); };
+    if (st) st.onchange = () => { s.store = st.value; saveActive(); };
     const mno = document.getElementById('set-machineno');
     if (mno) mno.oninput = () => { s.machineNo = mno.value; saveActive(); };
     const dt = document.getElementById('set-date');
