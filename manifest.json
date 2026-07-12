@@ -1,7 +1,7 @@
 {
-  "name": "スロット予測・実践",
-  "short_name": "スロット",
-  "description": "予測データ閲覧 + 店内実践カウンター",
+  "name": "スロット予測",
+  "short_name": "予測",
+  "description": "予測データ閲覧(的中率・今日の狙い・週間予報・差枚)",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

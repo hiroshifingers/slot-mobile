@@ -1,4 +1,4 @@
-/* 統合シェルの Service Worker: シェル+予測をオフライン化 / data.json はネット優先 */
+/* 予測シェルの Service Worker: シェル+予測をオフライン化 / data.json はネット優先 */
 const CACHE = 'slot-mobile-20260711-1935-94eb7367c3';
 const ASSETS = [
   './',
@@ -25,8 +25,6 @@ self.addEventListener('message', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
-  // practice/ 配下は practice 側の SW に任せる(このSWは介入しない)
-  if (url.pathname.indexOf('/practice/') !== -1) return;
   // data.json はネット優先(取れたらキャッシュ更新、ダメなら最後の成功分)
   if (url.pathname.indexOf('data.json') !== -1) {
     e.respondWith(

@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#111418"/>
-  <rect x="96" y="120" width="320" height="272" rx="28" fill="#1a1f26" stroke="#2e3742" stroke-width="8"/>
-  <g font-family="-apple-system, sans-serif" font-weight="800" text-anchor="middle">
-    <text x="256" y="250" font-size="120" fill="#4da3ff">7</text>
-    <text x="256" y="350" font-size="44" fill="#ffd34d">判別</text>
-  </g>
-</svg>
