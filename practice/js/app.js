@@ -44,13 +44,23 @@
   function fmtCounterFrac(prof, key, cnt) {
     const c = (prof.counters || []).find(x => x.key === key);
     if (!c) return '';
-    const toks = counterDenomTokens(c);
-    if (!toks || !toks.length) return '';
-    const denom = Engine.evalFormulaTokens(toks, state.active, { metrics: prof.metrics || [], stack: new Set() });
+    const ctx = { metrics: prof.metrics || [], stack: new Set(), gmode: prof.totalGMode };
+    const denToks = counterDenomTokens(c);
+    if (!denToks || !denToks.length) return '';
+    const denom = Engine.evalFormulaTokens(denToks, state.active, ctx);
     if (!(denom > 0)) return '';
+    // 分子：登録があれば計算式、無ければカウンターの値（タップ数）
+    const numToks = counterNumTokens(c);
+    let num = cnt;
+    if (numToks) {
+      const nv = Engine.evalFormulaTokens(numToks, state.active, ctx);
+      if (nv == null || !isFinite(nv)) return ''; // 式が未確定なら表示しない
+      num = nv;
+    }
+    const numDisp = Math.round(num * 1000) / 1000;
     const mode = c.display_mode || 'both';
-    const fracStr = `${cnt}/${denom}`;
-    const pctStr = `<span class="pct-val">${(cnt / denom * 100).toFixed(1)}%</span>`;
+    const fracStr = `${numDisp}/${denom}`;
+    const pctStr = `<span class="pct-val">${(num / denom * 100).toFixed(1)}%</span>`;
     if (mode === 'frac') return fracStr;
     if (mode === 'percent') return pctStr;
     return `${fracStr} ${pctStr}`;
@@ -149,6 +159,10 @@
     if (c.denomTokens) return c.denomTokens;
     return legacyToTokens(c.denominator, true);
   }
+  // カウンターの分子 tokens（登録があれば計算式、無ければ null＝カウント値を使う）
+  function counterNumTokens(c) {
+    return (c.numTokens && c.numTokens.length) ? c.numTokens : null;
+  }
   const emptySession = () => ({ total_spins: 0, start_spins: 0, valid_g: 0, counts: {}, history: [] });
 
   // tab: アプリ階層（session/profiles/edit/history）, sessionTab: セッション内タブ（pageId | 'hits' | 'judge' | 'settings'）
@@ -163,7 +177,12 @@
     setTimeout(() => t.remove(), 1600);
   }
   const fmtRate = (spins, hits) => hits ? '1/' + Math.round(spins / hits) : '—';
-  const playedG = (s) => Math.max(0, (Number(s.total_spins) || 0) - (Number(s.start_spins) || 0));
+  // 実践G：総Gのカウント方法で意味が変わる（manual=総G−スタート時G / auto=スタート時G＋総G）
+  const playedG = (prof, s) => {
+    const total = Math.max(0, Number(s.total_spins) || 0);
+    const start = Math.max(0, Number(s.start_spins) || 0);
+    return (prof && prof.totalGMode === 'auto') ? (start + total) : Math.max(0, total - start);
+  };
   function todayStr() {
     const d = new Date();
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -171,7 +190,8 @@
   // 総Gを大当たり履歴のG数合計から自動計算（機種設定が auto のとき）
   const autoTotalG = (s) => (s.history || []).reduce((a, h) => a + (Number(h.g) || 0), 0);
   function applyAutoTotal(prof, s) {
-    if (prof && prof.totalGMode === 'auto' && s) { s.total_spins = autoTotalG(s); s.start_spins = 0; }
+    // auto は総G＝大当たり履歴合計。スタート時Gは手動入力を保持する
+    if (prof && prof.totalGMode === 'auto' && s) { s.total_spins = autoTotalG(s); }
   }
   // セッション（1台）の総出玉＝大当たり履歴の出玉合計
   const sessionMedals = (s) => (s && s.history || []).reduce((a, h) => a + (Number(h.medals) || 0), 0);
@@ -233,7 +253,7 @@
     return {
       id: uid('s'), profileId: profile.id, machine: profile.machine,
       startedAt: Date.now(), total_spins: 0, start_spins: 0, valid_g: 0,
-      counts: {}, history: [], note: '', invest: 0,
+      counts: {}, history: [], note: '', invest: 0, payoutMedals: 0, payout: 0,
       store: '', date: todayStr(), machineNo: ''
     };
   }
@@ -268,9 +288,9 @@
     const s = state.active;
     const autoG = prof.totalGMode === 'auto';
     applyAutoTotal(prof, s);
-    const exp = Engine.totalExpectation(prof.metrics, s);
+    const exp = Engine.totalExpectation(prof.metrics, s, prof.totalGMode);
 
-    // --- ヘッダー（常時表示・コンパクト） ---
+    // --- ヘッダー（常時表示・コンパクト）：スタート時G / 総G / 実践G を均等3列 ---
     const roAttr = autoG ? 'readonly class="auto-ro"' : '';
     const header = `
       <div class="sess-header">
@@ -278,12 +298,13 @@
           <div class="sh-name">${esc(prof.machine)}</div>
           <div class="sh-best" id="hdr-best">${bestChipHtml(exp)}</div>
         </div>
-        <div class="sh-spins">
+        <div class="sh-spins triple">
+          <label><span>スタート時G</span>
+            <input id="start-spins" inputmode="numeric" value="${s.start_spins || ''}" placeholder="0" /></label>
           <label><span>総G${autoG ? '（自動）' : ''}</span>
             <input id="total-spins" inputmode="numeric" value="${s.total_spins || ''}" placeholder="0" ${roAttr} /></label>
-          ${autoG ? '' : `<label><span>スタートG</span>
-            <input id="start-spins" inputmode="numeric" value="${s.start_spins || ''}" placeholder="0" /></label>`}
-          <div class="played">実践<br><b id="played-g">${playedG(s)}</b>G</div>
+          <label class="played-col"><span>実践G</span>
+            <div class="played-val"><b id="played-g">${playedG(prof, s)}</b></div></label>
         </div>
         ${autoG ? '<div class="muted small" style="margin-top:4px">総Gは大当たり履歴のG数合計から自動計算されます</div>' : ''}
       </div>`;
@@ -297,7 +318,7 @@
         <div class="sess-tabrow sys">
           <button class="stab ${state.sessionTab === 'hits' ? 'on' : ''}" data-stab="hits">履歴</button>
           <button class="stab ${state.sessionTab === 'judge' ? 'on' : ''}" data-stab="judge">判別</button>
-          <button class="stab ${state.sessionTab === 'settings' ? 'on' : ''}" data-stab="settings">設定</button>
+          <button class="stab ${state.sessionTab === 'settings' ? 'on' : ''}" data-stab="settings">実践終了</button>
         </div>
       </div>`;
 
@@ -313,7 +334,7 @@
     // events: 総G / スタートG（フォーカス維持のため部分更新）
     const onSpins = () => {
       saveActive();
-      const pgEl = document.getElementById('played-g'); if (pgEl) pgEl.textContent = playedG(s);
+      const pgEl = document.getElementById('played-g'); if (pgEl) pgEl.textContent = playedG(prof, s);
       refreshHeaderBest(prof);
       if (state.sessionTab === 'judge') refreshJudge(prof);
       else if (state.sessionTab === 'hits') refreshRates(prof);
@@ -337,7 +358,7 @@
   }
   function refreshHeaderBest(prof) {
     const el = document.getElementById('hdr-best');
-    if (el) el.innerHTML = bestChipHtml(Engine.totalExpectation(prof.metrics, state.active));
+    if (el) el.innerHTML = bestChipHtml(Engine.totalExpectation(prof.metrics, state.active, prof.totalGMode));
   }
 
   /* ---- カウント画面 ---- */
@@ -370,6 +391,7 @@
     const s = state.active;
     const hits = s.history.length;
     const invest = Number(s.invest) || 0;
+    const last = hits - 1;
     return `
       <div id="rate-cards">${renderRateCards(prof)}</div>
       <div class="invest-row">
@@ -379,8 +401,23 @@
         <button class="btn" id="invest-plus">＋1k</button>
         <span class="ir-yen" id="invest-yen">${yen(invest)}円</span>
       </div>
+      <div class="invest-row payout-row">
+        <span class="ir-label">回収</span>
+        <input id="payout-medals" inputmode="numeric" value="${s.payoutMedals || ''}" placeholder="0" />
+        <span class="ir-unit">枚</span>
+        <button class="btn" id="payout-calc">計算</button>
+        <input id="payout-yen" inputmode="numeric" value="${s.payout || ''}" placeholder="0" />
+        <span class="ir-unit">円</span>
+      </div>
       <button class="btn primary block" id="add-hit" style="margin:12px 0">＋ 履歴登録</button>
-      ${hits ? `<div class="hist-list">${s.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => hitRowHtml(prof, h, `data-edit-hit="${i}"`)).join('')}</div>`
+      ${hits ? `<div class="hist-list">${s.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => `
+        <div class="hit-item">
+          <div class="hit-reorder">
+            <button class="hit-mv" data-hit-up="${i}" ${i >= last ? 'disabled' : ''} title="上へ">▲</button>
+            <button class="hit-mv" data-hit-down="${i}" ${i <= 0 ? 'disabled' : ''} title="下へ">▼</button>
+          </div>
+          ${hitRowHtml(prof, h, `data-edit-hit="${i}"`)}
+        </div>`).join('')}</div>`
         : `<div class="muted small center">まだ登録がありません。打ち始めたら ＋履歴登録 から。</div>`}
       <div class="card" style="margin-top:12px">${slumpSvg(s.history)}</div>
     `;
@@ -389,7 +426,7 @@
   // RB率/BB率/ART率…（機種の種別ごと）＋ 合算率。分母=実践G。各率の下に回数。
   function renderRateCards(prof) {
     const s = state.active;
-    const pg = playedG(s);
+    const pg = playedG(prof, s);
     const types = (prof.bonus_types && prof.bonus_types.length) ? prof.bonus_types : [];
     const cards = types.map(t => {
       const cnt = s.history.filter(h => h.type === t).length;
@@ -448,7 +485,7 @@
   }
   function refreshJudge(prof) {
     const c = document.getElementById('sess-content');
-    if (c) c.innerHTML = renderJudgeTab(Engine.totalExpectation(prof.metrics, state.active), prof);
+    if (c) c.innerHTML = renderJudgeTab(Engine.totalExpectation(prof.metrics, state.active, prof.totalGMode), prof);
     bindContentEvents(prof);
   }
 
@@ -481,10 +518,6 @@
         <button class="btn block" id="sm-switch">別の機種に切替（保存して終了）</button>
         <div style="height:8px"></div>
         <button class="btn block danger" id="sm-discard">破棄してリセット</button>
-      </div>
-      <div class="card">
-        <h2>機種設定</h2>
-        <button class="btn block ghost" id="go-edit">この機種のカウンター/判別を編集</button>
       </div>
     `;
   }
@@ -522,11 +555,39 @@
     if (ik) ik.oninput = () => { const v = parseFloat(ik.value || '0'); s.invest = Math.max(0, Math.round((isFinite(v) ? v : 0) * 1000)); investYen(); saveActive(); };
     const ip = document.getElementById('invest-plus');
     if (ip) ip.onclick = () => { s.invest = (Number(s.invest) || 0) + 1000; if (ik) ik.value = s.invest / 1000; investYen(); saveActive(); };
+    // 回収額（回収枚数 × 1枚あたり金額。1枚あたり=1000円/交換枚数（店舗マスタ））
+    const pm = document.getElementById('payout-medals');
+    if (pm) pm.oninput = () => { s.payoutMedals = parseInt(pm.value || '0', 10) || 0; saveActive(); };
+    const py = document.getElementById('payout-yen');
+    if (py) py.oninput = () => { s.payout = parseInt(py.value || '0', 10) || 0; saveActive(); };
+    const pc = document.getElementById('payout-calc');
+    if (pc) pc.onclick = () => {
+      const medals = Number(s.payoutMedals) || 0;
+      if (!medals) { toast('回収枚数を入力してください'); return; }
+      const rate = storeRate(s.store); // 1枚あたりの金額（円/枚）
+      s.payout = Math.round(medals * rate);
+      if (py) py.value = s.payout;
+      saveActive();
+      const inMaster = !!findStore(s.store);
+      toast(`${yen(medals)}枚 × ${rate}円 = ${yen(s.payout)}円${inMaster ? '' : '（既定' + DEFAULT_RATE + '円/枚）'}`);
+    };
     // 履歴
     const addHit = document.getElementById('add-hit');
     if (addHit) addHit.onclick = () => openHitModal(prof, -1);
     document.querySelectorAll('[data-edit-hit]').forEach(el =>
       el.onclick = () => openHitModal(prof, parseInt(el.getAttribute('data-edit-hit'), 10)));
+    // 大当たり履歴の並べ替え（表示は新しい順＝配列の後ろが上。▲=1つ上／▼=1つ下）
+    const moveHit = (from, to) => {
+      if (to < 0 || to >= s.history.length) return;
+      const t = s.history[from]; s.history[from] = s.history[to]; s.history[to] = t;
+      saveActive(); renderSession();
+    };
+    document.querySelectorAll('[data-hit-up]').forEach(b => b.onclick = (ev) => {
+      ev.stopPropagation(); const i = +b.getAttribute('data-hit-up'); moveHit(i, i + 1);
+    });
+    document.querySelectorAll('[data-hit-down]').forEach(b => b.onclick = (ev) => {
+      ev.stopPropagation(); const i = +b.getAttribute('data-hit-down'); moveHit(i, i - 1);
+    });
     // 判別: 統合トグル
     document.querySelectorAll('[data-mtoggle]').forEach(b =>
       b.onclick = async () => {
@@ -554,8 +615,6 @@
     if (sw) sw.onclick = async () => { await archiveSession(); pickMachineToStart(); };
     const disc = document.getElementById('sm-discard');
     if (disc) disc.onclick = async () => { if (confirm('このセッションを破棄しますか？')) { state.active = null; await DB.clearActive(); render(); } };
-    const ge = document.getElementById('go-edit');
-    if (ge) ge.onclick = () => editProfile(state.profiles.find(p => p.id === prof.id));
   }
 
   async function pickMachineToStart() {
@@ -715,7 +774,9 @@
   function counterGroupsHtml(e) {
     const rowHtml = (c) => {
       const dt = counterDenomTokens(c);
-      const sub = (dt && dt.length) ? '母数: ' + formulaText(dt, e) : 'カウントのみ';
+      const nt = counterNumTokens(c);
+      const numPart = nt ? '分子: ' + formulaText(nt, e) + ' ／ ' : '';
+      const sub = (dt && dt.length) ? numPart + '母数: ' + formulaText(dt, e) : 'カウントのみ';
       return `<div class="ed-sort-row tap-row" data-editckey="${esc(c.key)}">
         <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
         <div class="tr-main"><div class="tr-name">${esc(c.label) || '(無名)'}</div>
@@ -1040,6 +1101,9 @@
         <input id="cm-label" value="${esc(w.label)}" placeholder="例 強チェリー / 共通ベル" /></label>
       <label class="field"><span>画面（タブ）</span>
         <select id="cm-page">${pageOpts}</select></label>
+      <div class="field"><span>分子＝計算式（任意）</span>
+        ${fbtn(counterNumTokens(w) || [], e, 'data-cm-fnum', 0)}
+        <div class="muted small" style="margin-top:4px">空のままならカウンターの値（タップ数）を分子に使います</div></div>
       <div class="field"><span>母数（表示の分母）＝計算式</span>
         ${fbtn(counterDenomTokens(w), e, 'data-cm-fden', 0)}
         <div class="muted small" style="margin-top:4px">空のままなら分母なし（カウントのみ表示）</div></div>
@@ -1054,6 +1118,11 @@
         <button class="btn primary" id="cm-save">保存</button>
       </div>
     `, (root) => {
+      root.querySelector('[data-cm-fnum]').onclick = () =>
+        openFormulaBuilder('分子の計算式', counterNumTokens(w) || [], e, null, (toks) => {
+          if (toks.length) w.numTokens = toks; else delete w.numTokens;
+          updateFbtn(root, 'data-cm-fnum', toks, e);
+        });
       root.querySelector('[data-cm-fden]').onclick = () =>
         openFormulaBuilder('母数（分母）の計算式', counterDenomTokens(w), e, null, (toks) => {
           w.denomTokens = toks; delete w.denominator; updateFbtn(root, 'data-cm-fden', toks, e);
@@ -1184,7 +1253,7 @@
         disp.innerHTML = toks.length
           ? toks.map(t => `<span class="${tokClass(t)}">${esc(tokLabel(t, prof))}</span>`).join('')
           : '<span class="muted small">式が空です。下のボタンで組み立ててください。</span>';
-        const v = Engine.evalFormulaTokens(toks, state.active || emptySession(), { metrics: prof.metrics || [], stack: new Set() });
+        const v = Engine.evalFormulaTokens(toks, state.active || emptySession(), { metrics: prof.metrics || [], stack: new Set(), gmode: prof.totalGMode });
         if (!toks.length) prev.innerHTML = '';
         else if (v == null) prev.innerHTML = '<span class="fb-bad">現在の入力では計算できません（式の途中・0除算・データ不足）</span>';
         else prev.innerHTML = `いまのデータでの値 = <b>${Math.round(v * 1000) / 1000}</b>`;
@@ -1516,8 +1585,17 @@
      ・台別成績は各セッション（記録）をそのまま参照
   ============================================================ */
   const DEFAULT_RATE = 20; // 円/枚（等価）
+  const DEFAULT_MEDALS_1K = 50; // 交換枚数/1,000円（等価: 1,000円で50枚）
   const findStore = (name) => state.stores.find(s => (s.name || '') === (name || ''));
-  const storeRate = (name) => { const s = findStore(name); return s && Number(s.rate) > 0 ? Number(s.rate) : DEFAULT_RATE; };
+  // 店舗マスタの「交換枚数/1,000円」。旧データ（rate=円/枚）は 1000/rate に換算
+  const storeMedals1k = (name) => {
+    const s = findStore(name);
+    if (s && Number(s.medals1k) > 0) return Number(s.medals1k);
+    if (s && Number(s.rate) > 0) return 1000 / Number(s.rate);
+    return DEFAULT_MEDALS_1K;
+  };
+  // 1枚あたりの金額（円/枚）＝ 1,000円 ÷ 交換枚数
+  const storeRate = (name) => 1000 / storeMedals1k(name);
   const yen = (n) => (Number(n) || 0).toLocaleString('ja-JP');
   // 日付＋店舗から決定的なdayId（端末間で同じキー＝同期で重複しない）
   function keyHash(str) { let h = 0; for (let i = 0; i < (str || '').length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0; } return (h >>> 0).toString(36); }
@@ -1696,17 +1774,19 @@
   function openStoreMaster() {
     const work = state.stores.map(s => ({ ...s }));
 
+    const medals1kOf = (s) => (Number(s.medals1k) > 0 ? s.medals1k : (Number(s.rate) > 0 ? Math.round(1000 / Number(s.rate) * 100) / 100 : ''));
+
     const body = () => `
-      <h3>店舗マスタ（換金率）</h3>
-      <div class="muted small" style="margin-bottom:8px">回収金額 = 出玉(枚) × 換金率(円/枚)。等価は20円/枚。</div>
+      <h3>店舗マスタ（交換枚数）</h3>
+      <div class="muted small" style="margin-bottom:8px">回収金額 = 回収枚数 × 1枚あたりの金額。1枚あたり = 1,000円 ÷ 交換枚数。等価は50枚/1,000円。</div>
       <div id="sm-list">
         ${work.length ? work.map((s, i) => `
           <div class="sm-row">
             <div class="edit-grid">
               <label class="field" style="margin:0"><span>店舗名</span>
                 <input data-sm-name="${i}" value="${esc(s.name || '')}" placeholder="店名" /></label>
-              <label class="field" style="margin:0"><span>換金率(円/枚)</span>
-                <input data-sm-rate="${i}" inputmode="decimal" value="${esc(s.rate == null ? '' : s.rate)}" placeholder="20" /></label>
+              <label class="field" style="margin:0"><span>交換枚数 / 1,000円</span>
+                <input data-sm-medals="${i}" inputmode="decimal" value="${esc(medals1kOf(s))}" placeholder="50" /></label>
             </div>
             <button class="btn small danger" data-sm-del="${i}">削除</button>
           </div>`).join('')
@@ -1717,13 +1797,16 @@
 
     const sync = (root) => {
       root.querySelectorAll('[data-sm-name]').forEach(inp => { work[+inp.getAttribute('data-sm-name')].name = inp.value.trim(); });
-      root.querySelectorAll('[data-sm-rate]').forEach(inp => { const v = parseFloat(inp.value); work[+inp.getAttribute('data-sm-rate')].rate = isFinite(v) && v > 0 ? v : DEFAULT_RATE; });
+      root.querySelectorAll('[data-sm-medals]').forEach(inp => {
+        const v = parseFloat(inp.value); const w = work[+inp.getAttribute('data-sm-medals')];
+        w.medals1k = isFinite(v) && v > 0 ? v : DEFAULT_MEDALS_1K; delete w.rate;
+      });
     };
 
     openModal(body(), function bind(root) {
       const modal = root.querySelector('.modal');
       const rerender = () => { modal.innerHTML = body(); bind(root); };
-      root.querySelector('#sm-add').onclick = () => { sync(root); work.push({ id: uid('st'), name: '', rate: DEFAULT_RATE, createdAt: Date.now() }); rerender(); };
+      root.querySelector('#sm-add').onclick = () => { sync(root); work.push({ id: uid('st'), name: '', medals1k: DEFAULT_MEDALS_1K, createdAt: Date.now() }); rerender(); };
       root.querySelectorAll('[data-sm-del]').forEach(b => b.onclick = () => { sync(root); work.splice(+b.getAttribute('data-sm-del'), 1); rerender(); });
       root.querySelector('#sm-save').onclick = async () => {
         sync(root);

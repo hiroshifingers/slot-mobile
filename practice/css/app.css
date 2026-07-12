@@ -135,6 +135,13 @@ input.auto-ro { color: var(--fg-dim); background: var(--bg2); border-style: dash
 .sh-spins input { font-size: 19px; font-weight: 800; padding: 7px 10px; }
 .sh-spins .played { flex: none; text-align: center; font-size: 11px; color: var(--fg-dim); line-height: 1.2; white-space: nowrap; }
 .sh-spins .played b { font-size: 19px; color: var(--accent); }
+/* スタート時G / 総G / 実践G を均等3列 */
+.sh-spins.triple > label { flex: 1 1 0; min-width: 0; }
+.sh-spins.triple input { width: 100%; box-sizing: border-box; text-align: center; }
+.sh-spins.triple .played-col .played-val {
+  font-size: 19px; font-weight: 800; color: var(--accent); text-align: center;
+  padding: 7px 10px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px;
+}
 .stat .rcnt { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
 
 /* ---- セッション 2段タブ ---- */
@@ -417,3 +424,17 @@ input.auto-ro { color: var(--fg-dim); background: var(--bg2); border-style: dash
 .invest-row .ir-unit { font-size: 15px; font-weight: 700; color: var(--fg-dim); }
 .invest-row .btn { padding: 10px 14px; font-weight: 800; }
 .invest-row .ir-yen { margin-left: auto; font-size: 13px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+/* 回収行：入力2つ＋計算ボタン。狭い画面では折り返す */
+.payout-row { flex-wrap: wrap; }
+.payout-row input { width: 68px; }
+.payout-row .btn { padding: 10px 12px; }
+
+/* 大当たり履歴の並べ替え（▲▼） */
+.hit-item { display: flex; align-items: stretch; gap: 8px; }
+.hit-item .hist-row { flex: 1; min-width: 0; }
+.hit-reorder { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+.hit-mv {
+  width: 34px; padding: 3px 0; font-size: 12px; line-height: 1;
+  background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+}
+.hit-mv:disabled { opacity: .3; }

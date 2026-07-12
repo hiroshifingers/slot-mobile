@@ -49,10 +49,18 @@ const Engine = (() => {
     return null;
   }
 
+  // 実践G（有効ゲーム数）。総Gのカウント方法で意味が変わる。
+  //   manual: 総G − スタート時G（途中から打った分）
+  //   auto  : スタート時G ＋ 総G（総G=大当たり履歴合計）
+  function playedGames(session, gmode) {
+    const total = Math.max(0, Number(session.total_spins || 0));
+    const start = Math.max(0, Number(session.start_spins || 0));
+    return gmode === 'auto' ? (start + total) : Math.max(0, total - start);
+  }
+
   // 分母（試行数 N）を解決
-  function resolveDenom(denominator, session) {
-    // 実践G = 総回転数 − スタートG（途中から打った分のみを分母にする）
-    if (denominator === 'total_spins') return Math.max(0, Number(session.total_spins || 0) - Number(session.start_spins || 0));
+  function resolveDenom(denominator, session, gmode) {
+    if (denominator === 'total_spins') return playedGames(session, gmode);
     if (denominator === 'valid_g')     return Number(session.valid_g || 0);
     if (denominator === 'hits')        return (session.history || []).length; // 大当たり回数（振り分け%の分母）
     if (typeof denominator === 'string' && denominator.startsWith('counter:'))
@@ -91,7 +99,7 @@ const Engine = (() => {
     if (tok.num != null) return Number(tok.num);
     switch (tok.var) {
       case 'total_g':  return Math.max(0, Number(session.total_spins || 0));
-      case 'played_g': return Math.max(0, Number(session.total_spins || 0) - Number(session.start_spins || 0));
+      case 'played_g': return playedGames(session, ctx && ctx.gmode);
       case 'valid_g':  return Number(session.valid_g || 0);
       case 'hits':     return (session.history || []).length;
       case 'counter':  return Number(((session.counts) || {})[tok.ref] || 0);
@@ -155,7 +163,7 @@ const Engine = (() => {
   function computeMetric(metric, session, ctx) {
     ctx = ctx || { metrics: [], stack: new Set() };
     const k = metric.sourceTokens ? evalFormulaTokens(metric.sourceTokens, session, ctx) : evalSource(metric.source, session);
-    const N = metric.denomTokens ? evalFormulaTokens(metric.denomTokens, session, ctx) : resolveDenom(metric.denominator, session);
+    const N = metric.denomTokens ? evalFormulaTokens(metric.denomTokens, session, ctx) : resolveDenom(metric.denominator, session, ctx.gmode);
     const include = metric.include !== false; // 総合判別に統合（既定on）
     const base = { key: metric.key, label: metric.label, mode: metric.mode, settings: metric.settings, include, k, N };
     if (k == null || !(N > 0) || k < 0 || k > N) return { ...base, active: false };
@@ -186,8 +194,8 @@ const Engine = (() => {
   }
 
   // 総合期待度（事後確率%）
-  function totalExpectation(metrics, session) {
-    const ctx = { metrics: metrics || [], stack: new Set() };
+  function totalExpectation(metrics, session, gmode) {
+    const ctx = { metrics: metrics || [], stack: new Set(), gmode };
     const computed = (metrics || []).map(m => computeMetric(m, session, ctx));
     const active = computed.filter(m => m.active && m.include && Object.values(m.logL).some(v => v != null));
     if (!active.length) return { computed, posterior: null, best: null, anyData: false, usedCount: 0 };
