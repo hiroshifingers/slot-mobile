@@ -1,5 +1,5 @@
 /* 予測シェルの Service Worker: シェル+予測をオフライン化 / data.json はネット優先 */
-const CACHE = 'slot-mobile-20260717-2205-f9b1577dc6';
+const CACHE = 'slot-mobile-20260718-0736-d8a6d2ecfe';
 const ASSETS = [
   './',
   './index.html',
